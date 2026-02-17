@@ -14632,25 +14632,25 @@ LOAD C:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.ext
  .debug_macro   0x0002d0f1      0x286 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_rcc.o
  .debug_macro   0x0002d377      0x26f ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_uart.o
 
-.debug_line     0x00000000    0x10a48
+.debug_line     0x00000000    0x10a47
  .debug_line    0x00000000      0xfd4 ./Core/Src/main.o
- .debug_line    0x00000fd4       0x54 ./Core/Src/mov_avg.o
- .debug_line    0x00001028      0x857 ./Core/Src/stm32l4xx_hal_msp.o
- .debug_line    0x0000187f      0x93e ./Core/Src/stm32l4xx_it.o
- .debug_line    0x000021bd      0x619 ./Core/Src/sysmem.o
- .debug_line    0x000027d6      0x8f5 ./Core/Src/system_stm32l4xx.o
- .debug_line    0x000030cb       0x7a ./Core/Startup/startup_stm32l4s5vitx.o
- .debug_line    0x00003145      0xd0f ./Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01.o
- .debug_line    0x00003e54      0x9e4 ./Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_accelero.o
- .debug_line    0x00004838      0x9e0 ./Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_gyro.o
- .debug_line    0x00005218      0x6b8 ./Drivers/BSP/Components/lsm6dsl/lsm6dsl.o
- .debug_line    0x000058d0      0xc5d ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal.o
- .debug_line    0x0000652d      0xdce ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_cortex.o
- .debug_line    0x000072fb      0xc99 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_gpio.o
- .debug_line    0x00007f94     0x37af ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_i2c.o
- .debug_line    0x0000b743      0x9bd ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_i2c_ex.o
- .debug_line    0x0000c100     0x12a2 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_rcc.o
- .debug_line    0x0000d3a2     0x36a6 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_uart.o
+ .debug_line    0x00000fd4       0x53 ./Core/Src/mov_avg.o
+ .debug_line    0x00001027      0x857 ./Core/Src/stm32l4xx_hal_msp.o
+ .debug_line    0x0000187e      0x93e ./Core/Src/stm32l4xx_it.o
+ .debug_line    0x000021bc      0x619 ./Core/Src/sysmem.o
+ .debug_line    0x000027d5      0x8f5 ./Core/Src/system_stm32l4xx.o
+ .debug_line    0x000030ca       0x7a ./Core/Startup/startup_stm32l4s5vitx.o
+ .debug_line    0x00003144      0xd0f ./Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01.o
+ .debug_line    0x00003e53      0x9e4 ./Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_accelero.o
+ .debug_line    0x00004837      0x9e0 ./Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_gyro.o
+ .debug_line    0x00005217      0x6b8 ./Drivers/BSP/Components/lsm6dsl/lsm6dsl.o
+ .debug_line    0x000058cf      0xc5d ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal.o
+ .debug_line    0x0000652c      0xdce ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_cortex.o
+ .debug_line    0x000072fa      0xc99 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_gpio.o
+ .debug_line    0x00007f93     0x37af ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_i2c.o
+ .debug_line    0x0000b742      0x9bd ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_i2c_ex.o
+ .debug_line    0x0000c0ff     0x12a2 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_rcc.o
+ .debug_line    0x0000d3a1     0x36a6 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_uart.o
 
 .debug_str      0x00000000   0x114ffa
  .debug_str     0x00000000   0x114ffa ./Core/Src/main.o

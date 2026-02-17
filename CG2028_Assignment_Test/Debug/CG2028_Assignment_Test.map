@@ -14545,17 +14545,17 @@ LOAD C:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.ext
  .debug_macro   0x0002b818      0x244 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_cortex.o
  .debug_macro   0x0002ba5c      0x24b ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_gpio.o
 
-.debug_line     0x00000000     0x54c6
+.debug_line     0x00000000     0x54c5
  .debug_line    0x00000000      0xc91 ./Core/Src/main.o
- .debug_line    0x00000c91       0x54 ./Core/Src/mov_avg.o
- .debug_line    0x00000ce5      0x857 ./Core/Src/stm32l4xx_hal_msp.o
- .debug_line    0x0000153c      0x93e ./Core/Src/stm32l4xx_it.o
- .debug_line    0x00001e7a      0x619 ./Core/Src/sysmem.o
- .debug_line    0x00002493      0x8f5 ./Core/Src/system_stm32l4xx.o
- .debug_line    0x00002d88       0x7a ./Core/Startup/startup_stm32l4s5vitx.o
- .debug_line    0x00002e02      0xc5d ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal.o
- .debug_line    0x00003a5f      0xdce ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_cortex.o
- .debug_line    0x0000482d      0xc99 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_gpio.o
+ .debug_line    0x00000c91       0x53 ./Core/Src/mov_avg.o
+ .debug_line    0x00000ce4      0x857 ./Core/Src/stm32l4xx_hal_msp.o
+ .debug_line    0x0000153b      0x93e ./Core/Src/stm32l4xx_it.o
+ .debug_line    0x00001e79      0x619 ./Core/Src/sysmem.o
+ .debug_line    0x00002492      0x8f5 ./Core/Src/system_stm32l4xx.o
+ .debug_line    0x00002d87       0x7a ./Core/Startup/startup_stm32l4s5vitx.o
+ .debug_line    0x00002e01      0xc5d ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal.o
+ .debug_line    0x00003a5e      0xdce ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_cortex.o
+ .debug_line    0x0000482c      0xc99 ./Drivers/STM32L4xx_HAL_Driver/Src/stm32l4xx_hal_gpio.o
 
 .debug_str      0x00000000   0x1111d9
  .debug_str     0x00000000   0x1111d9 ./Core/Src/main.o

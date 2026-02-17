@@ -29,7 +29,39 @@ This document serves as your comprehensive guide to the **CG2028 Assignment**. I
 
 ---
 
-## 2. VERIFICATION: THE TEST BENCH (`CG2028_Assignment_Test`)
+## 2. HOW TO RUN & VERIFY (CRITICAL SETUP)
+
+This workspace contains two distinct projects. You must know which one to run.
+
+### **A. `CG2028_Assignment_Test` (The Simulation)**
+*   **Purpose:** Verifies your assembly logic (`mov_avg.s`) using fake, hardcoded numbers.
+*   **Where to see output:** The **IDE Console** window (via Semihosting).
+*   **How to Run:**
+    1.  Right-click `CG2028_Assignment_Test` -> **Debug As** -> **STM32 Cortex-M C/C++ Application**.
+    2.  Click **Resume (F8)**.
+    3.  Check the "Console" tab at the bottom.
+    4.  **Success:** It prints `Test passed`.
+
+### **B. `CG2028_Assignment` (The Real Application)**
+*   **Purpose:** Runs on the physical board with real sensors.
+*   **Where to see output:** **Tera Term** (Serial Monitor). You will **NOT** see output in the IDE Console.
+*   **How to Setup Tera Term:**
+    1.  Plug in your STM32 Board via USB.
+    2.  Open **Tera Term**.
+    3.  Select **Serial** (Radio button).
+    4.  Choose the Port labeled **"STMicroelectronics STLink Virtual COM Port"**. Click OK.
+    5.  Go to **Setup** -> **Serial Port...**
+    6.  Set **Speed (Baud rate)** to **115200**.
+    7.  Click **New Setting**.
+*   **How to Run:**
+    1.  Right-click `CG2028_Assignment` -> **Debug As** -> **STM32 Cortex-M C/C++ Application**.
+    2.  Click **Resume (F8)**.
+    3.  Look at the Tera Term window.
+    4.  **Success:** You see scrolling data: `Acc: 0.12, Gyro: 0.05` and `FALL DETECTED` messages when shaken.
+
+---
+
+## 3. VERIFICATION: THE TEST BENCH (`CG2028_Assignment_Test`)
 
 Before integrating with real sensors, you must verify your assembly filter works correctly using the provided test bench. Real sensors are noisy; if your filter is broken (e.g., misaligned stack, wrong register usage), the whole system fails unpredictably. This test bench isolates the logic.
 

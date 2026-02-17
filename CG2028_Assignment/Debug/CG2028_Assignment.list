@@ -37,11 +37,11 @@ Idx Name          Size      VMA       LMA       File off  Algn
                   CONTENTS, READONLY, DEBUGGING, OCTETS
  16 .debug_macro  0002d5e6  00000000  00000000  0001c0ef  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 17 .debug_line   00010a48  00000000  00000000  000496d5  2**0
+ 17 .debug_line   00010a47  00000000  00000000  000496d5  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 18 .debug_str    00114ffa  00000000  00000000  0005a11d  2**0
+ 18 .debug_str    00114ffa  00000000  00000000  0005a11c  2**0
                   CONTENTS, READONLY, DEBUGGING, OCTETS
- 19 .comment      00000043  00000000  00000000  0016f117  2**0
+ 19 .comment      00000043  00000000  00000000  0016f116  2**0
                   CONTENTS, READONLY
  20 .debug_frame  000044c4  00000000  00000000  0016f15c  2**2
                   CONTENTS, READONLY, DEBUGGING, OCTETS
@@ -84,37 +84,40 @@ Disassembly of section .text:
 @ R1 ...
 @ write your program from here:
 mov_avg:
- PUSH {r3-r11, lr}
- 8000200:	e92d 4ff8 	stmdb	sp!, {r3, r4, r5, r6, r7, r8, r9, sl, fp, lr}
- MOV R4, R0		@R0=4
- 8000204:	4604      	mov	r4, r0
- MOV R5, R0
- 8000206:	4605      	mov	r5, r0
- MOV R6, #0
- 8000208:	f04f 0600 	mov.w	r6, #0
+    PUSH {r2-r11, lr}   @ Save registers (Teaching Team Template)
+ 8000200:	e92d 4ffc 	stmdb	sp!, {r2, r3, r4, r5, r6, r7, r8, r9, sl, fp, lr}
+
+    MOV r2, #0          @ r2 = loop counter (i = 0)
+ 8000204:	f04f 0200 	mov.w	r2, #0
+    MOV r3, #0          @ r3 = accumulator (sum = 0)
+ 8000208:	f04f 0300 	mov.w	r3, #0
 
 0800020c <loop>:
 
- loop:
- 	CMP R5, #0		@R5==0?
- 800020c:	2d00      	cmp	r5, #0
- 	BEQ done		@done if R5==0, Z flag is set to 1
- 800020e:	d005      	beq.n	800021c <done>
- 	LDR R7, [R1], #4
- 8000210:	f851 7b04 	ldr.w	r7, [r1], #4
- 	ADD R6, R6, R7
- 8000214:	443e      	add	r6, r7
- 	SUB R5, R5, #1	@decrement
- 8000216:	f1a5 0501 	sub.w	r5, r5, #1
- 	B loop
+loop:
+    CMP r2, r0          @ Compare i with N (r0)
+ 800020c:	4282      	cmp	r2, r0
+    BGE end_loop        @ If i >= N, exit loop
+ 800020e:	da05      	bge.n	800021c <end_loop>
+
+    LDR r4, [r1, r2, LSL #2]  @ Load accel_buff[i] into r4. (Offset = i * 4 bytes)
+ 8000210:	f851 4022 	ldr.w	r4, [r1, r2, lsl #2]
+    ADD r3, r3, r4      @ sum += accel_buff[i]
+ 8000214:	4423      	add	r3, r4
+
+    ADD r2, r2, #1      @ i++
+ 8000216:	f102 0201 	add.w	r2, r2, #1
+    B loop              @ Repeat loop
  800021a:	e7f7      	b.n	800020c <loop>
 
-0800021c <done>:
- done:
- 	SDIV R0, R6, R4
- 800021c:	fb96 f0f4 	sdiv	r0, r6, r4
- POP {r3-r11, pc}
- 8000220:	e8bd 8ff8 	ldmia.w	sp!, {r3, r4, r5, r6, r7, r8, r9, sl, fp, pc}
+0800021c <end_loop>:
+
+end_loop:
+    ASR r0, r3, #2      @ r0 = sum / 4
+ 800021c:	ea4f 00a3 	mov.w	r0, r3, asr #2
+    
+    POP {r2-r11, pc}    @ Restore registers and return
+ 8000220:	e8bd 8ffc 	ldmia.w	sp!, {r2, r3, r4, r5, r6, r7, r8, r9, sl, fp, pc}
 	...
 
 08000230 <memchr>:

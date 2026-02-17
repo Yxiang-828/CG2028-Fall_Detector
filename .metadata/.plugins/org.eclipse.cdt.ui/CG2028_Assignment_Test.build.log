@@ -1,10 +1,18 @@
-21:01:31 **** Incremental Build of configuration Debug for project CG2028_Assignment_Test ****
+21:18:52 **** Incremental Build of configuration Debug for project CG2028_Assignment_Test ****
 make -j16 all 
+arm-none-eabi-gcc -mcpu=cortex-m4 -g3 -DDEBUG -c -x assembler-with-cpp -MMD -MP -MF"Core/Src/mov_avg.d" -MT"Core/Src/mov_avg.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/mov_avg.o" "../Core/Src/mov_avg.s"
+arm-none-eabi-gcc -o "CG2028_Assignment_Test.elf" @"objects.list"  -lrdimon -mcpu=cortex-m4 -T"C:\Users\xiang\STM32CubeIDE\Assignment\CG2028_Assignment_Test\STM32L4S5VITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="CG2028_Assignment_Test.map" -Wl,--gc-sections -static -specs=rdimon.specs -lc -lrdimon --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -Wl,--end-group
+C:/ST/STM32CubeIDE_1.19.0/STM32CubeIDE/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.13.3.rel1.win32_1.0.0.202411081344/tools/bin/../lib/gcc/arm-none-eabi/13.3.1/../../../../arm-none-eabi/bin/ld.exe: warning: CG2028_Assignment_Test.elf has a LOAD segment with RWX permissions
+Finished building target: CG2028_Assignment_Test.elf
+ 
 arm-none-eabi-size  CG2028_Assignment_Test.elf 
+arm-none-eabi-objdump -h -S CG2028_Assignment_Test.elf  > "CG2028_Assignment_Test.list"
    text	   data	    bss	    dec	    hex	filename
   18580	    484	   2076	  21140	   5294	CG2028_Assignment_Test.elf
 Finished building: default.size.stdout
  
+Finished building: CG2028_Assignment_Test.list
+ 
 
-21:01:31 Build Finished. 0 errors, 0 warnings. (took 607ms)
+21:18:53 Build Finished. 0 errors, 1 warnings. (took 959ms)
 
