@@ -35,7 +35,7 @@ int main(void)
 	/*********************************************************/
 
 	int sensor_data_x[16]={1000,1001,1002,1003,1004,1005,1006,1007,1008,1009,1010,1011,1012,1013,1014,1015};
-	int sensor_data_y[16]={1016,1017,1018,1019,1020,1021,1022,1023,1024,1025,1026,1027,1028,1029,1030,1031};
+	int sensor_data_y[16]={1016.1017,1018,1019,1020,1021,1022,1023,1024,1025,1026,1027,1028,1029.1030,1031};
 	int sensor_data_z[16]={1032,1033,1034,1035,1036,1037,1038,1039,1040,1041,1042,1043,1044,1045,1046,1047};
 
 
@@ -120,13 +120,3 @@ int mov_avg_C(int N, int* accel_buff)
 
 	return result;
 }
-
-// Do not modify these lines of code. They are written to supress UART related warnings
-int _read(int file, char *ptr, int len) { return 0; }
-int _fstat(int file, struct stat *st) { return 0; }
-// int _lseek(int file, int ptr, int dir) { return 0; }
-// int _isatty(int file) { return 1; }
-// int _close(int file) { return -1; }
-// int _getpid(void) { return 1; }
-// int _kill(int pid, int sig) { return -1; }
-

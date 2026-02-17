@@ -1,2 +1,4 @@
 ../Core/Src/main.c:26:5:main	296	static
 ../Core/Src/main.c:111:5:mov_avg_C	24	static
+../Core/Src/main.c:125:5:_read	24	static
+../Core/Src/main.c:126:5:_fstat	16	static
