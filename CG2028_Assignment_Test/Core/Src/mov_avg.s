@@ -23,18 +23,22 @@
 @ R1 ...
 @ write your program from here:
 mov_avg:
- PUSH {r3-r11, lr}
- MOV R4, R0		@R0=4
- MOV R5, R0
- MOV R6, #0
+    PUSH {r2-r11, lr}   @ Save registers
 
- loop:
- 	CMP R5, #0		@R5==0?
- 	BEQ done		@done if R5==0, Z flag is set to 1
- 	LDR R7, [R1], #4
- 	ADD R6, R6, R7
- 	SUB R5, R5, #1	@decrement
- 	B loop
- done:
- 	SDIV R0, R6, R4
- POP {r3-r11, pc}
+    MOV r2, #0          @ r2 = loop counter (i = 0)
+    MOV r3, #0          @ r3 = accumulator (sum = 0)
+
+loop:
+    CMP r2, r0          @ Compare i with N (r0)
+    BGE end_loop        @ If i >= N, exit loop
+
+    LDR r4, [r1, r2, LSL #2]  @ Load accel_buff[i] into r4. (Offset = i * 4 bytes)
+    ADD r3, r3, r4      @ sum += accel_buff[i]
+
+    ADD r2, r2, #1      @ i++
+    B loop              @ Repeat loop
+
+end_loop:
+    ASR r0, r3, #2      @ r0 = sum / 4
+    
+    POP {r2-r11, pc}    @ Restore registers and return

@@ -95,8 +95,26 @@ This is the core signal processing unit. It must be efficient and follow the **A
 
 mov_avg:
     @ 1. Save Context
-    @ Pushing R3-R11, LR ensures 8-byte stack alignment (10 registers = 40 bytes)
-    PUSH {R3-R11, LR}
+    @ Pushing R2-R11, LR ensures correct register preservation
+    PUSH {R2-R11, LR}
+
+    MOV R2, #0          @ R2 = loop counter (i = 0)
+    MOV R3, #0          @ R3 = accumulator (sum = 0)
+
+loop:
+    CMP R2, R0          @ Compare i with N (R0)
+    BGE end_loop        @ If i >= N, exit loop
+
+    LDR R4, [R1, R2, LSL #2]  @ Load accel_buff[i] into R4. (Offset = i * 4 bytes)
+    ADD R3, R3, R4      @ sum += accel_buff[i]
+
+    ADD R2, R2, #1      @ i++
+    B loop              @ Repeat loop
+
+end_loop:
+    ASR R0, R3, #2      @ R0 = sum / 4 (Arithmetic Shift Right by 2 = divide by 4)
+    
+    POP {R2-R11, PC}    @ Restore registers and return
 
     MOV R4, R0          @ R4 = N (Copy count for division later)
     MOV R5, R0          @ R5 = Loop Counter (starts at N)
