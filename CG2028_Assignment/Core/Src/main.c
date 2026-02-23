@@ -26,6 +26,14 @@ int mov_avg_C(int N, int* accel_buff); // Reference C implementation
 
 UART_HandleTypeDef huart1;
 
+// 4-Stage Fall Detection State Machine
+typedef enum {
+    STATE_NORMAL,
+    STATE_FREEFALL,
+    STATE_TUMBLE,
+    STATE_ALARM
+} FallState;
+
 
 int main(void)
 {
@@ -49,12 +57,24 @@ int main(void)
 	int accel_buff_y[4]={0};
 	int accel_buff_z[4]={0};
 	int i=0;
-	int delay_ms=1000; //change delay time to suit your code
+	
+	uint32_t last_led_toggle = 0;
+	uint32_t last_uart_transmit = 0;
+	uint32_t led_blink_interval = 1000; // default 1 second slow blink
+
+	FallState current_fall_state = STATE_NORMAL;
+	uint32_t freefall_start_time = 0;
+	uint32_t alarm_start_time = 0;
 
 	while (1)
 	{
+		uint32_t current_tick = HAL_GetTick();
 
-		BSP_LED_Toggle(LED2);		// This function helps to toggle the current LED state
+		// Asynchronous LED Toggling (Does not block sensor reads)
+		if (current_tick - last_led_toggle >= led_blink_interval) {
+			BSP_LED_Toggle(LED2);
+			last_led_toggle = current_tick;
+		}
 
 		int16_t accel_data_i16[3] = { 0 };			// array to store the x, y and z readings of accelerometer
 		/********Function call to read accelerometer values*********/
@@ -73,9 +93,9 @@ int main(void)
 
 		//The output of gyro has been made to display in dps(degree per second)
 		float gyro_velocity[3]={0.0};
-		gyro_velocity[0]=(gyro_data[0]*9.8/(1000));
-		gyro_velocity[1]=(gyro_data[1]*9.8/(1000));
-		gyro_velocity[2]=(gyro_data[2]*9.8/(1000));
+		gyro_velocity[0] = (gyro_data[0] / 1000.0f);
+		gyro_velocity[1] = (gyro_data[1] / 1000.0f);
+		gyro_velocity[2] = (gyro_data[2] / 1000.0f);
 
 
 		//Preprocessing the filtered outputs  The same needs to be done for the output from the C program as well
@@ -97,7 +117,8 @@ int main(void)
 		char buffer[150]; // Create a buffer large enough to hold the text
 
 		/******Transmitting results of C execution over UART*********/
-		if(i>=3)
+		// Transmit results over UART, limited to twice a second (500ms) to prevent console spam
+		if(i>=3 && (current_tick - last_uart_transmit >= 500))
 		{
 			// 1. First printf() Equivalent
 			sprintf(buffer, "Results of C execution for filtered accelerometer readings:\r\n");
@@ -132,48 +153,88 @@ int main(void)
 			sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n\n",
 					gyro_velocity[0], gyro_velocity[1], gyro_velocity[2]);
 			HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+			
+			last_uart_transmit = current_tick;
 		}
 
-		HAL_Delay(delay_ms);	// 1 second delay
-
-		i++;
-
-		// ********* Fall detection *********/
-		// write your program from here:
-
+		// ********* 4-Stage Fall Detection (Physics Engine) *********/
 		// Calculate total acceleration magnitude (Vectors sum)
 		float total_accel = sqrt(pow(accel_filt_asm[0], 2) + pow(accel_filt_asm[1], 2) + pow(accel_filt_asm[2], 2));
 
 		// Calculate total gyroscope velocity magnitude
 		float total_gyro = sqrt(pow(gyro_velocity[0], 2) + pow(gyro_velocity[1], 2) + pow(gyro_velocity[2], 2));
 
-		// Thresholds (Empirical values, need tuning based on observation)
-		// Normal gravity is ~9.8 m/s^2.
-		// A fall impact often exceeds 2g (~19.6 m/s^2) or drops near 0 (freefall).
-		// We will test for high impact > 25 m/s^2
-		float ACCEL_THRESHOLD_HIGH = 25.0f;
+		switch(current_fall_state) {
+			case STATE_NORMAL:
+				// NORMAL -> FREEFALL
+				// The person has visibly started dropping (lost footing/fainting). 
+				// Gravity force towards the board drops below 0.7G (7.0 m/s2)
+				if (total_accel < 7.0f) {
+					current_fall_state = STATE_FREEFALL;
+					freefall_start_time = current_tick;
+					
+					sprintf(buffer, "\r\n[FSM] 1/4: DROP DETECTED! (Accel: %.1f m/s2)\r\n", total_accel);
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				led_blink_interval = 1000; // Normal activity - Blink LED slow (0.5Hz toggle)
+				break;
 
-		// Gyroscope threshold for sudden rotation
-		// 300 dps is a reasonably fast rotation
-		float GYRO_THRESHOLD = 300.0f;
+			case STATE_FREEFALL:
+				// FREEFALL -> TUMBLE
+				// While falling, the human body naturally tips or flails slightly.
+				// We look for a gentle rotation (> 50 dps) to confirm it is a human fall, not an elevator or jump.
+				if (current_tick - freefall_start_time > 1500) {
+					// Timed out (1.5 seconds) - Was just a gentle bump or jump
+					current_fall_state = STATE_NORMAL;
+					sprintf(buffer, "\r\n[FSM] <-- FALSE ALARM. (No tumble/impact occurred)\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				} 
+				else if (total_gyro > 50.0f) { // Caught the "Slight Turn"
+					current_fall_state = STATE_TUMBLE;
+					
+					sprintf(buffer, "\r\n[FSM] 2/4: UNCONTROLLED TUMBLE DETECTED! (Gyro: %.1f dps)\r\n", total_gyro);
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				break;
 
-		if (total_accel > ACCEL_THRESHOLD_HIGH || total_gyro > GYRO_THRESHOLD)
-		{
-			// Fall detected!
-			// Blink LED fast (e.g., 100ms delay -> 10Hz toggle)
-			delay_ms = 100;
+			case STATE_TUMBLE:
+				// TUMBLE -> IMPACT
+				// They are now officially falling and rotating. Waiting for the massive deceleration spike.
+				if (current_tick - freefall_start_time > 2000) {
+					// Timed out (2.0 seconds) - Somehow they never hit the ground?
+					current_fall_state = STATE_NORMAL;
+					sprintf(buffer, "\r\n[FSM] <-- FALSE ALARM. (They recovered their balance)\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				else if (total_accel > 15.0f) { // > 1.5G Heavy Deceleration Impact
+					current_fall_state = STATE_ALARM;
+					alarm_start_time = current_tick;
+					
+					// Instantly fire a one-time critical UART alert overriding the 500ms block
+					sprintf(buffer, "\r\n[FSM] 3/4: !!! CRITICAL GROUND IMPACT !!! \r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+					sprintf(buffer, ">>> Impact Force: %.2f m/s2 | Rotation: %.2f dps <<<\r\n\n", total_accel, total_gyro);
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				break;
 
-			// Optional: Print alert
-			sprintf(buffer, "!!! FALL DETECTED !!! Accel: %.2f, Gyro: %.2f\r\n", total_accel, total_gyro);
-			HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+			case STATE_ALARM:
+				// [FSM] 4/4: SETTLED & ALARMING
+				// Fall detected! Lock the LED into a fast strobe (10Hz toggle)
+				led_blink_interval = 100; 
+				
+				// Hold the screaming alarm state for 5 seconds
+				if (current_tick - alarm_start_time > 5000) {
+					current_fall_state = STATE_NORMAL; // Automatically reset to normal
+					
+					sprintf(buffer, "\r\n[FSM] User Rescued. Resetting System.\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				break;
 		}
-		else
-		{
-			// Normal activity
-			// Blink LED slow (e.g., 1000ms delay -> 0.5Hz toggle)
-			delay_ms = 1000;
-		}
-
+		
+		i++;
+		HAL_Delay(20);	// Sample sensors extremely fast at 50Hz
 	}
 
 
