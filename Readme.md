@@ -175,105 +175,36 @@ done:
 
 ## 4. PART 2: THE MAIN APPLICATION (`main.c`)
 
-The C code manages the sensors, buffers, and fall detection decisions.
+The C code manages the sensors, buffers, and fallback detection decisions. Moving away from naive threshold checking, the system features a **4-Stage Biomechanical Physics Engine** designed to rigorously distinguish genuine human falls from false positive anomalies (like bumping the desk or dropping the device on a bed).
 
-### **Global Variables (Top of File)**
-
+### **Core Data Management**
+The system maintains a non-blocking **50Hz hardware polling loop** using `HAL_GetTick()`. Circular buffers hold the 4 most recent `$x, y, z$` acceleration readings:
 ```c
-/* USER CODE BEGIN PV */
-// Sensor Buffers (Circular)
-int x_buff[4] = {0}, y_buff[4] = {0}, z_buff[4] = {0};
-int buf_index = 0;
-
-// System Flags
-int system_armed = 1;     // 1=ON (Monitoring), 0=OFF (Standby)
-int fall_confirmed = 0;   // 1=FALL DETECTED
-int possible_fall_wait = 0; // State machine for fall sequence
-
-// Debouncing
-uint32_t last_btn_time = 0;
-/* USER CODE END PV */
+int accel_buff_x[4] = {0};
+// Index increments continuously: x_buff[i % 4] = new_reading;
 ```
+This guarantees an ultra-low latency response while still smoothing data through the assembly Moving Average Filter.
 
-### **Main Loop Logic**
+### **The 4-Stage Finite State Machine (FallState)**
+A real human fall is a chronological progression of physical events. The `current_fall_state` tracks this exact progression:
 
-```c
-/* USER CODE BEGIN 3 */
-    // === 1. SYSTEM CONTROL (5-Way Switch) ===
-    // PA1 is the Center Button of the joystick. 
-    // Pressing it toggles the system ON or OFF.
-    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) == GPIO_PIN_SET) {
-        if (HAL_GetTick() - last_btn_time > 200) { // 200ms Debounce
-            system_armed = !system_armed; // Toggle State
-            fall_confirmed = 0;           // Reset Alarms
-            last_btn_time = HAL_GetTick();
-        }
-    }
+#### **Stage 1: FREEFALL (The Drop)**
+*   **Physics:** When a person faints or their legs buckle, they accelerate downwards, neutralizing gravity.
+*   **Trigger:** If `total_accel < 7.0 m/s^2` (< 0.7G).
+*   **Action:** Starts a `freefall_start_time` crash timer and waits.
 
-    if (system_armed) {
-        // === 2. SENSOR ACQUISITION ===
-        int16_t pData[3] = {0};
-        BSP_ACCELERO_AccGetXYZ(pData);
+#### **Stage 2: TUMBLE (The Uncontrolled Descent)**
+*   **Physics:** As a human falls over 0.5 to 1.5 seconds, their body *unavoidably* tips, flails, or rotates. We use this to filter out jumping straight down.
+*   **Trigger:** If `total_gyro > 50.0 dps` occurs *during* the freefall timer.
+*   **Action:** Confirms human descent. (If 1.5s passes without rotation, it's a False Alarm).
 
-        // Update Circular Buffers
-        x_buff[buf_index % 4] = pData[0];
-        y_buff[buf_index % 4] = pData[1];
-        z_buff[buf_index % 4] = pData[2];
-        buf_index++;
+#### **Stage 3: IMPACT (The Deceleration Spike)**
+*   **Physics:** The body hits the ground, causing a massive deceleration shockwave. 
+*   **Trigger:** If `total_accel > 15.0 m/s^2` (> 1.5G) occurs while tumbling.
+*   **Action:** Triggers the ALARM. (If 2.0s passes after the drop without an impact, the user recovered their balance).
 
-        // === 3. FILTERING (Assembly Call) ===
-        // Get average from assembly, convert to float (m/s^2)
-        float ax = (float)mov_avg(4, x_buff) * (9.8/1000.0f);
-        float ay = (float)mov_avg(4, y_buff) * (9.8/1000.0f);
-        float az = (float)mov_avg(4, z_buff) * (9.8/1000.0f);
-        
-        // === 4. FALL DETECTION LOGIC ===
-        // Calculate Total Magnitude Vector: sqrt(x^2 + y^2 + z^2)
-        float magnitude = sqrt(ax*ax + ay*ay + az*az);
-
-        // Threshold 1: Free Fall (Magnitude drops < 3.0 m/s^2)
-        if (magnitude < 3.0) {
-             possible_fall_wait = 1;
-        }
-
-        // Threshold 2: Impact (Magnitude spikes > 20.0 m/s^2)
-        // A fall is usually Free Fall -> Impact
-        if (possible_fall_wait && magnitude > 20.0) {
-            fall_confirmed = 1;
-            possible_fall_wait = 0;
-        }
-
-        // === 5. OUTPUTS (Visual/Audio) ===
-        if (fall_confirmed) {
-            BSP_LED_Toggle(LED2);               // FAST Blink (Panic Mode)
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET); // Buzzer ON
-            Show_Angry_Face();                  // OLED: "FALL DETECTED!"
-            HAL_Delay(50);                      // Fast loop speed
-        } else {
-            BSP_LED_Off(LED2);                  // LED OFF (Normal)
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET); // Buzzer OFF
-            Show_Happy_Face();                  // OLED: "SYSTEM OK"
-            HAL_Delay(50);                      // Normal loop speed
-        }
-
-        // === 6. DATA LOGGING (UART) ===
-        // Print immediately (index >= 0) to debug
-        if (buf_index >= 0) { 
-             char buffer[100];
-             // Requires -u _printf_float in Linker Settings
-             sprintf(buffer, "Acc: %.2f, %.2f, %.2f | Mag: %.2f\r\n", ax, ay, az, magnitude);
-             HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), 100);
-        }
-        
-    } else {
-        // === STANDBY MODE ===
-        BSP_LED_Off(LED2);
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
-        // Show_Standby_Face();
-        HAL_Delay(100);
-    }
-/* USER CODE END 3 */
-```
+#### **Stage 4: ALARM (Emergency Protocol)**
+*   **Action:** The system locks into a high-visibility, 10Hz fast-strobe LED state `led_blink_interval = 100` and floods the UART terminal with critical warning messages. It holds this state for 5 seconds to simulate an emergency beacon.
 
 ---
 
