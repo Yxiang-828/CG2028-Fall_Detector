@@ -175,36 +175,104 @@ done:
 
 ## 4. PART 2: THE MAIN APPLICATION (`main.c`)
 
-The C code manages the sensors, buffers, and fallback detection decisions. Moving away from naive threshold checking, the system features a **4-Stage Biomechanical Physics Engine** designed to rigorously distinguish genuine human falls from false positive anomalies (like bumping the desk or dropping the device on a bed).
+The C code manages the sensors, buffers, and fall detection decisions.
 
-### **Core Data Management**
-The system maintains a non-blocking **50Hz hardware polling loop** using `HAL_GetTick()`. Circular buffers hold the 4 most recent `$x, y, z$` acceleration readings:
+### **Global Variables (Top of File)**
+
 ```c
-int accel_buff_x[4] = {0};
-// Index increments continuously: x_buff[i % 4] = new_reading;
+/* USER CODE BEGIN PV */
+// Sensor Buffers (Circular)
+int x_buff[4] = {0}, y_buff[4] = {0}, z_buff[4] = {0};
+int buf_index = 0;
+
+// System Flags
+int system_armed = 1;     // 1=ON (Monitoring), 0=OFF (Standby)
+int fall_confirmed = 0;   // 1=FALL DETECTED
+int possible_fall_wait = 0; // State machine for fall sequence
+
+// Debouncing
+uint32_t last_btn_time = 0;
+/* USER CODE END PV */
 ```
-This guarantees an ultra-low latency response while still smoothing data through the assembly Moving Average Filter.
 
-### **The 4-Stage Finite State Machine (FallState)**
-A real human fall is a chronological progression of physical events. The `current_fall_state` tracks this exact progression:
+### **Main Loop Logic**
 
-#### **Stage 1: FREEFALL (The Drop)**
-*   **Physics:** When a person faints or their legs buckle, they accelerate downwards, neutralizing gravity.
-*   **Trigger:** If `total_accel < 7.0 m/s^2` (< 0.7G).
-*   **Action:** Starts a `freefall_start_time` crash timer and waits.
+```c
+/* USER CODE BEGIN 3 */
+    // === 1. SYSTEM CONTROL (5-Way Switch) ===
+    // PA1 is the Center Button of the joystick. 
+    // Pressing it toggles the system ON or OFF.
+    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) == GPIO_PIN_SET) {
+        if (HAL_GetTick() - last_btn_time > 200) { // 200ms Debounce
+            system_armed = !system_armed; // Toggle State
+            fall_confirmed = 0;           // Reset Alarms
+            last_btn_time = HAL_GetTick();
+        }
+    }
 
-#### **Stage 2: TUMBLE (The Uncontrolled Descent)**
-*   **Physics:** As a human falls over 0.5 to 1.5 seconds, their body *unavoidably* tips, flails, or rotates. We use this to filter out jumping straight down.
-*   **Trigger:** If `total_gyro > 50.0 dps` occurs *during* the freefall timer.
-*   **Action:** Confirms human descent. (If 1.5s passes without rotation, it's a False Alarm).
+    if (system_armed) {
+        // === 2. SENSOR ACQUISITION ===
+        int16_t pData[3] = {0};
+        BSP_ACCELERO_AccGetXYZ(pData);
 
-#### **Stage 3: IMPACT (The Deceleration Spike)**
-*   **Physics:** The body hits the ground, causing a massive deceleration shockwave. 
-*   **Trigger:** If `total_accel > 15.0 m/s^2` (> 1.5G) occurs while tumbling.
-*   **Action:** Triggers the ALARM. (If 2.0s passes after the drop without an impact, the user recovered their balance).
+        // Update Circular Buffers
+        x_buff[buf_index % 4] = pData[0];
+        y_buff[buf_index % 4] = pData[1];
+        z_buff[buf_index % 4] = pData[2];
+        buf_index++;
 
-#### **Stage 4: ALARM (Emergency Protocol)**
-*   **Action:** The system locks into a high-visibility, 10Hz fast-strobe LED state `led_blink_interval = 100` and floods the UART terminal with critical warning messages. It holds this state for 5 seconds to simulate an emergency beacon.
+        // === 3. FILTERING (Assembly Call) ===
+        // Get average from assembly, convert to float (m/s^2)
+        float ax = (float)mov_avg(4, x_buff) * (9.8/1000.0f);
+        float ay = (float)mov_avg(4, y_buff) * (9.8/1000.0f);
+        float az = (float)mov_avg(4, z_buff) * (9.8/1000.0f);
+        
+        // === 4. FALL DETECTION LOGIC ===
+        // Calculate Total Magnitude Vector
+        float total_accel = sqrt(ax*ax + ay*ay + az*az);
+        // (Assuming gx, gy, gz are parsed from gyro similarly)
+        float total_gyro = sqrt(gx*gx + gy*gy + gz*gz);
+
+        // Thresholds based on biomechanical literature
+        float ACCEL_THRESHOLD_HIGH = 25.0f;
+        float GYRO_THRESHOLD = 300.0f;
+
+        // Condition: High impact OR High rotatonal velocity
+        if (total_accel > ACCEL_THRESHOLD_HIGH || total_gyro > GYRO_THRESHOLD) {
+            fall_confirmed = 1;
+        }
+
+        // === 5. OUTPUTS (Visual/Audio) ===
+        if (fall_confirmed) {
+            BSP_LED_Toggle(LED2);               // FAST Blink (Panic Mode)
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET); // Buzzer ON
+            Show_Angry_Face();                  // OLED: "FALL DETECTED!"
+            HAL_Delay(50);                      // Fast loop speed
+        } else {
+            BSP_LED_Off(LED2);                  // LED OFF (Normal)
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET); // Buzzer OFF
+            Show_Happy_Face();                  // OLED: "SYSTEM OK"
+            HAL_Delay(50);                      // Normal loop speed
+        }
+
+        // === 6. DATA LOGGING (UART) ===
+        // Print immediately (index >= 0) to debug
+        if (buf_index >= 0) { 
+             char buffer[100];
+             // Requires -u _printf_float in Linker Settings
+             sprintf(buffer, "Acc: %.2f, %.2f, %.2f | Mag: %.2f\r\n", ax, ay, az, magnitude);
+             HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), 100);
+        }
+        
+    } else {
+        // === STANDBY MODE ===
+        BSP_LED_Off(LED2);
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+        // Show_Standby_Face();
+        HAL_Delay(100);
+    }
+/* USER CODE END 3 */
+```
 
 ---
 
@@ -256,3 +324,57 @@ This section details the extra hardware used, how it works, and why it is essent
 | **OLED (SDA)** | I2C1_SDA | **PB9** | **D14 (SDA)** |
 | **OLED (VCC)** | Power | **3.3V** | **3.3V** |
 | **OLED (GND)** | Ground | **GND** | **GND** |
+
+---
+
+## 7. FALL DETECTION METHODOLOGY & JUSTIFICATION
+
+### **A. General Information & Analysis**
+The "golden point" of a true fall is not just the impact with the ground—it is the **failure to recover**. People frequently perform hard impacts (jumping) or rapid rotations (lying down quickly), but in a genuine emergency, the user remains incapacitated on the floor. This is known as the "Long Lie" scenario, which drastically increases mortality rates.
+
+Furthermore, analyzing the biomechanics of how people fall reveals that falls rarely happen straight down perfectly vertically. Usually, there is a loss of balance resulting in a **rapid rotation or tumble**, followed by a **freefall** phase, ending in a **hard impact**.
+
+### **B. System Architecture: 4-State Mealy Machine**
+To combat false positives from daily activities, this system is built on a **Mealy Finite State Machine (FSM)**. A Mealy machine computes its next state and outputs based on both its *current state* and *current sensor inputs*. This allows us to track the chronological sequence of a fall, rather than relying on a single moment in time.
+
+The FSM consists of 4 states:
+1. **`STATE_NORMAL`**: The system is monitoring at 10Hz. It waits for the first anomaly (either a massive impact, a freefall, or a huge rotational spike).
+2. **`STATE_FALLING`**: The sequence has begun. The system waits up to **1.5 seconds** to see if the *other* conditions occur (e.g., if rotation triggered us, we wait for the impact). If they don't all occur together within 1.5s, it was a fake fall (like sitting down fast) and it resets.
+3. **`STATE_STILLNESS_CHECK`**: Both impact and rotation happened! The system now initiates a **5-second countdown**. It employs a 2-second "blind period" to let the physical sensors and surfaces stop bouncing, and then checks if the user is moving (recovering). If the user gets up, the alarm is aborted.
+4. **`STATE_CONFIRMED`**: The countdown reached zero without the user getting up. The system declares a "Long Lie" emergency and triggers the alarms.
+
+### **C. Current Thresholds & Conditions**
+Our system uses the following finely-tuned empirical thresholds to distinguish true falls from casual activities (like moving the board, shaking it, or dropping it on a soft pillow):
+
+*   **`ACCEL_THRESHOLD_HIGH = 30.0f` ($m/s^2$)**: Detects a genuinely hard, violent impact ($\approx 3.0g$). Bumped up from 25.0f to ignore casual table bumps.
+*   **`ACCEL_THRESHOLD_LOW = 2.5f` ($m/s^2$)**: Detects a state of **Freefall** ($\approx 0.25g$). This is critical for detecting when the user falls onto a soft surface (like a bed/pillow) that absorbs the final impact.
+*   **`GYRO_THRESHOLD = 400.0f` ($dps$)**: Detects incredibly rapid tumbling/rotation. Bumped up heavily from 150 dps so that casual wrist twisting or swishing does not trigger the FSM. 
+
+*   **Recovery Thresholds (Stillness Check)**: To abort the 5-second alarm countdown, the user must generate significant movement: `> 5.0f` deviation in acceleration from baseline 1g, or `> 250.0f` dps rotation.
+
+### **D. Testing Methodology**
+The system logic was heavily verified using live visual debugging via a serial connection.
+*   **Serial Output (Tera Term):** By printing large, multi-line ASCII art text blocks for every state transition (e.g., `FALLING`, `STILLNESS`), we could physically throw, drop, and shake the board while instantly seeing its decision-making process in real-time. 
+*   **Countdown Visilibity:** During the crucial stillness check, massive ASCII numbers (5 down to 1) were printed per second to verify the timer logic and the blind-period recovery aborts correctly.
+*   *Pending tests*: Full integration testing with the physical Buzzer, LED blink sequences, and I2C OLED display reactions to the confirmed state.
+
+---
+
+## 8. CG2028 ASSESSMENT SCHEDULE AND INFORMATION
+
+The following rules and guidelines apply to the final assessment demonstration (Week 7):
+
+*   **Punctuality:** Arrive at least 15 minutes before the designated slot to test the system and prepare. Both team members must strictly be present.
+*   **Code Submission:** 
+    *   **CRITICAL:** Only the version downloaded from Canvas will be graded. 
+    *   Running code from a thumb drive, USB, or Google Drive is considered a late submission and will incur penalties.
+    *   Ensure the code compiles without errors; failure to compile will result in significant mark deductions.
+    *   Ensure the final assembly program remains compatible with the provided `main.c` test file and expected interface.
+*   **Hardware & Setup:** 
+    *   Bring your own STM32 board.
+    *   Demonstrate on the lab computer (Windows setup with STM32 IDE and Tera Term). 
+    *   Projects with extra features requiring other software can be shown on a personal laptop.
+*   **Presentation & QnA:**
+    *   Use your own device for slides. Be ready to explain design choices.
+    *   Each student will be assessed individually with 2 project-related questions.
+    *   Must be able to demonstrate the system distinguishing true positives from false positives.

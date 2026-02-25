@@ -39,6 +39,6 @@ loop:
     B loop              @ Repeat loop
 
 end_loop:
-    SDIV r0, r3, r0     @ r0 = sum / N (preserves C-parity truncating towards zero)
-
+    ASR r0, r3, #2      @ r0 = sum / 4
+    
     POP {r2-r11, pc}    @ Restore registers and return

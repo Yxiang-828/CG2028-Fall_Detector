@@ -1,14 +1,14 @@
-05:13:03 **** Incremental Build of configuration Debug for project CG2028_Assignment ****
+00:21:43 **** Incremental Build of configuration Debug for project CG2028_Assignment ****
 make -j16 all 
 arm-none-eabi-size  CG2028_Assignment.elf 
    text	   data	    bss	    dec	    hex	filename
-  34792	    584	   2144	  37520	   9290	CG2028_Assignment.elf
+  37360	    588	   2164	  40112	   9cb0	CG2028_Assignment.elf
 Finished building: default.size.stdout
  
-05:13:09 **** Incremental Build of configuration Debug for project CG2028_Assignment ****
+00:21:48 **** Incremental Build of configuration Debug for project CG2028_Assignment ****
 make -j16 all 
 arm-none-eabi-size  CG2028_Assignment.elf 
    text	   data	    bss	    dec	    hex	filename
-  34792	    584	   2144	  37520	   9290	CG2028_Assignment.elf
+  37360	    588	   2164	  40112	   9cb0	CG2028_Assignment.elf
 Finished building: default.size.stdout
  

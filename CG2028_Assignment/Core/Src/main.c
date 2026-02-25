@@ -26,14 +26,18 @@ int mov_avg_C(int N, int* accel_buff); // Reference C implementation
 
 UART_HandleTypeDef huart1;
 
-// 4-Stage Fall Detection State Machine
+// FSM States and Variables
 typedef enum {
-    STATE_NORMAL,
-    STATE_FREEFALL,
-    STATE_TUMBLE,
-    STATE_ALARM
-} FallState;
+    STATE_NORMAL = 0,
+    STATE_FALLING,
+    STATE_STILLNESS_CHECK,
+    STATE_CONFIRMED
+} FallState_t;
 
+FallState_t current_state = STATE_NORMAL;
+uint32_t state_timer = 0;
+int seen_impact = 0;
+int seen_rotation = 0;
 
 int main(void)
 {
@@ -57,24 +61,12 @@ int main(void)
 	int accel_buff_y[4]={0};
 	int accel_buff_z[4]={0};
 	int i=0;
-	
-	uint32_t last_led_toggle = 0;
-	uint32_t last_uart_transmit = 0;
-	uint32_t led_blink_interval = 1000; // default 1 second slow blink
-
-	FallState current_fall_state = STATE_NORMAL;
-	uint32_t freefall_start_time = 0;
-	uint32_t alarm_start_time = 0;
+	int delay_ms=1000; //change delay time to suit your code
 
 	while (1)
 	{
-		uint32_t current_tick = HAL_GetTick();
 
-		// Asynchronous LED Toggling (Does not block sensor reads)
-		if (current_tick - last_led_toggle >= led_blink_interval) {
-			BSP_LED_Toggle(LED2);
-			last_led_toggle = current_tick;
-		}
+		BSP_LED_Toggle(LED2);		// This function helps to toggle the current LED state
 
 		int16_t accel_data_i16[3] = { 0 };			// array to store the x, y and z readings of accelerometer
 		/********Function call to read accelerometer values*********/
@@ -93,9 +85,9 @@ int main(void)
 
 		//The output of gyro has been made to display in dps(degree per second)
 		float gyro_velocity[3]={0.0};
-		gyro_velocity[0] = (gyro_data[0] / 1000.0f);
-		gyro_velocity[1] = (gyro_data[1] / 1000.0f);
-		gyro_velocity[2] = (gyro_data[2] / 1000.0f);
+		gyro_velocity[0]=(gyro_data[0]*9.8/(1000));
+		gyro_velocity[1]=(gyro_data[1]*9.8/(1000));
+		gyro_velocity[2]=(gyro_data[2]*9.8/(1000));
 
 
 		//Preprocessing the filtered outputs  The same needs to be done for the output from the C program as well
@@ -114,127 +106,203 @@ int main(void)
 		accel_filt_c[2]=(float)mov_avg_C(N,accel_buff_z) * (9.8/1000.0f);
 
 		/***************************UART transmission*******************************************/
-		char buffer[150]; // Create a buffer large enough to hold the text
+		char buffer[600]; // Increased buffer size heavily to support the large multi-line ASCII art prints without overflowing memory
 
 		/******Transmitting results of C execution over UART*********/
-		// Transmit results over UART, limited to twice a second (500ms) to prevent console spam
-		if(i>=3 && (current_tick - last_uart_transmit >= 500))
-		{
-			// 1. First printf() Equivalent
-			sprintf(buffer, "Results of C execution for filtered accelerometer readings:\r\n");
-			HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+		// 1. First printf() Equivalent
+		sprintf(buffer, "Results of C execution for filtered accelerometer readings:\r\n");
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 
-			// 2. Second printf() (with Floats) Equivalent
-			// Note: Requires -u _printf_float to be enabled in Linker settings
-			sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n",
-					accel_filt_c[0], accel_filt_c[1], accel_filt_c[2]);
-			HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+		// 2. Second printf() (with Floats) Equivalent
+		// Note: Requires -u _printf_float to be enabled in Linker settings
+		sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n",
+				accel_filt_c[0], accel_filt_c[1], accel_filt_c[2]);
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 
-			/******Transmitting results of asm execution over UART*********/
+		/******Transmitting results of asm execution over UART*********/
 
-			// 1. First printf() Equivalent
-			sprintf(buffer, "Results of assembly execution for filtered accelerometer readings:\r\n");
-			HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+		// 1. First printf() Equivalent
+		sprintf(buffer, "Results of assembly execution for filtered accelerometer readings:\r\n");
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 
-			// 2. Second printf() (with Floats) Equivalent
-			// Note: Requires -u _printf_float to be enabled in Linker settings
-			sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n",
-					accel_filt_asm[0], accel_filt_asm[1], accel_filt_asm[2]);
-			HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+		// 2. Second printf() (with Floats) Equivalent
+		// Note: Requires -u _printf_float to be enabled in Linker settings
+		sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n",
+				accel_filt_asm[0], accel_filt_asm[1], accel_filt_asm[2]);
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 
-			/******Transmitting Gyroscope readings over UART*********/
+		/******Transmitting Gyroscope readings over UART*********/
 
-			// 1. First printf() Equivalent
-			sprintf(buffer, "Gyroscope sensor readings:\r\n");
-			HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+		// 1. First printf() Equivalent
+		sprintf(buffer, "Gyroscope sensor readings:\r\n");
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 
-			// 2. Second printf() (with Floats) Equivalent
-			// Note: Requires -u _printf_float to be enabled in Linker settings
-			sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n\n",
-					gyro_velocity[0], gyro_velocity[1], gyro_velocity[2]);
-			HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
-			
-			last_uart_transmit = current_tick;
-		}
+		// Calculate total acceleration and gyroscope magnitudes for UART output
+		float total_accel_print = sqrt(pow(accel_filt_asm[0], 2) + pow(accel_filt_asm[1], 2) + pow(accel_filt_asm[2], 2));
+		float total_gyro_print = sqrt(pow(gyro_velocity[0], 2) + pow(gyro_velocity[1], 2) + pow(gyro_velocity[2], 2));
 
-		// ********* 4-Stage Fall Detection (Physics Engine) *********/
+		// 2. Second printf() (with Floats) Equivalent
+		// Note: Requires -u _printf_float to be enabled in Linker settings
+		sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n"
+						"Derived Mag -> Accel: %.2f m/s^2 | Gyro: %.2f dps\r\n\n",
+				gyro_velocity[0], gyro_velocity[1], gyro_velocity[2], total_accel_print, total_gyro_print);
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+
+		i++; // Increment circular buffer index counter BEFORE the blocking delay
+
+		HAL_Delay(delay_ms);	// Dynamic delay based on FSM state (100ms or 1000ms)
+
+		// ********* Fall detection *********/
+		
 		// Calculate total acceleration magnitude (Vectors sum)
 		float total_accel = sqrt(pow(accel_filt_asm[0], 2) + pow(accel_filt_asm[1], 2) + pow(accel_filt_asm[2], 2));
 
 		// Calculate total gyroscope velocity magnitude
 		float total_gyro = sqrt(pow(gyro_velocity[0], 2) + pow(gyro_velocity[1], 2) + pow(gyro_velocity[2], 2));
 
-		switch(current_fall_state) {
+		float ACCEL_THRESHOLD_HIGH = 30.0f; // Real hard impact
+		float ACCEL_THRESHOLD_LOW = 2.5f;   // Very clear freefall (near 0)
+		float GYRO_THRESHOLD = 400.0f;      // Very fast tumble
+
+		static int last_printed_second = -1; // Defined here for cleanliness
+
+		switch (current_state) {
 			case STATE_NORMAL:
-				// NORMAL -> FREEFALL
-				// The person has visibly started dropping (lost footing/fainting). 
-				// Gravity force towards the board drops below 0.7G (7.0 m/s2)
-				if (total_accel < 7.0f) {
-					current_fall_state = STATE_FREEFALL;
-					freefall_start_time = current_tick;
-					
-					sprintf(buffer, "\r\n[FSM] 1/4: DROP DETECTED! (Accel: %.1f m/s2)\r\n", total_accel);
-					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
-				}
-				led_blink_interval = 1000; // Normal activity - Blink LED slow (0.5Hz toggle)
-				break;
+				// Reset flags
+				seen_impact = 0;
+				seen_rotation = 0;
+				delay_ms = 100; // FAST loop (10Hz) to ensure we don't miss sudden falls between samples!
 
-			case STATE_FREEFALL:
-				// FREEFALL -> TUMBLE
-				// While falling, the human body naturally tips or flails slightly.
-				// We look for a gentle rotation (> 50 dps) to confirm it is a human fall, not an elevator or jump.
-				if (current_tick - freefall_start_time > 1500) {
-					// Timed out (1.5 seconds) - Was just a gentle bump or jump
-					current_fall_state = STATE_NORMAL;
-					sprintf(buffer, "\r\n[FSM] <-- FALSE ALARM. (No tumble/impact occurred)\r\n");
-					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
-				} 
-				else if (total_gyro > 50.0f) { // Caught the "Slight Turn"
-					current_fall_state = STATE_TUMBLE;
+				if (total_accel > ACCEL_THRESHOLD_HIGH || total_accel < ACCEL_THRESHOLD_LOW || total_gyro > GYRO_THRESHOLD) {
+					current_state = STATE_FALLING;
+					state_timer = HAL_GetTick(); // Start falling timer
+
+					if (total_accel > ACCEL_THRESHOLD_HIGH || total_accel < ACCEL_THRESHOLD_LOW) seen_impact = 1;
+					if (total_gyro > GYRO_THRESHOLD) seen_rotation = 1;
 					
-					sprintf(buffer, "\r\n[FSM] 2/4: UNCONTROLLED TUMBLE DETECTED! (Gyro: %.1f dps)\r\n", total_gyro);
+					sprintf(buffer, 
+						"\r\n=================================\r\n"
+						" FFFFFFF  AAA   L       L     I N   N  GGGG \r\n"
+						" F       A   A  L       L     I NN  N G     \r\n"
+						" FFFF    AAAAA  L       L     I N N N G GGG \r\n"
+						" F       A   A  L       L     I N  NN G   G \r\n"
+						" F       A   A  LLLLLLL LLLLL I N   N  GGGG \r\n"
+						"=================================\r\n");
 					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 				}
 				break;
 
-			case STATE_TUMBLE:
-				// TUMBLE -> IMPACT
-				// They are now officially falling and rotating. Waiting for the massive deceleration spike.
-				if (current_tick - freefall_start_time > 2000) {
-					// Timed out (2.0 seconds) - Somehow they never hit the ground?
-					current_fall_state = STATE_NORMAL;
-					sprintf(buffer, "\r\n[FSM] <-- FALSE ALARM. (They recovered their balance)\r\n");
+			case STATE_FALLING:
+				delay_ms = 100; // Speed up loop for fine detection
+
+				// Check for missing component within 1.5s
+				if (total_accel > ACCEL_THRESHOLD_HIGH || total_accel < ACCEL_THRESHOLD_LOW) seen_impact = 1;
+				if (total_gyro > GYRO_THRESHOLD) seen_rotation = 1;
+
+				if (seen_impact && seen_rotation) {
+					// Both anomaly conditions met!
+					current_state = STATE_STILLNESS_CHECK;
+					state_timer = HAL_GetTick(); // Start stillness timer
+					last_printed_second = -1; // Reset countdown for fresh start
+					sprintf(buffer, 
+						"\r\n=================================\r\n"
+						" SSSSS TTTTT  I  L       L     N   N EEEEE SSSSS SSSSS \r\n"
+						" S       T    I  L       L     NN  N E     S     S     \r\n"
+						" SSSSS   T    I  L       L     N N N EEEEE SSSSS SSSSS \r\n"
+						"     S   T    I  L       L     N  NN E         S     S \r\n"
+						" SSSSS   T    I  LLLLLLL LLLLL N   N EEEEE SSSSS SSSSS \r\n"
+						"=================================\r\n"
+						"Waiting 5s... (Impact/Drop & Rotation seen!)\r\n");
 					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 				}
-				else if (total_accel > 15.0f) { // > 1.5G Heavy Deceleration Impact
-					current_fall_state = STATE_ALARM;
-					alarm_start_time = current_tick;
-					
-					// Instantly fire a one-time critical UART alert overriding the 500ms block
-					sprintf(buffer, "\r\n[FSM] 3/4: !!! CRITICAL GROUND IMPACT !!! \r\n");
-					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
-					sprintf(buffer, ">>> Impact Force: %.2f m/s2 | Rotation: %.2f dps <<<\r\n\n", total_accel, total_gyro);
+				else if (HAL_GetTick() - state_timer > 1500) {
+					// 1.5s timeout. It was just a jump (impact only) or sitting down (rotation only). False positive.
+					current_state = STATE_NORMAL;
+					sprintf(buffer, 
+						"\r\n=================================\r\n"
+						" N   N  OOO  RRRR  M   M  AAA  L     \r\n"
+						" NN  N O   O R   R MM MM A   A L     \r\n"
+						" N N N O   O RRRR  M M M AAAAA L     \r\n"
+						" N  NN O   O R   R M   M A   A L     \r\n"
+						" N   N  OOO  R   R M   M A   A LLLLL \r\n"
+						"=================================\r\n"
+						"TIMEOUT (1.5s) - FAKE FALL\r\n");
 					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 				}
 				break;
 
-			case STATE_ALARM:
-				// [FSM] 4/4: SETTLED & ALARMING
-				// Fall detected! Lock the LED into a fast strobe (10Hz toggle)
-				led_blink_interval = 100; 
+			case STATE_STILLNESS_CHECK:
+				delay_ms = 100;
+
+				// Countdown printing logic
+				uint32_t elapsed_time = HAL_GetTick() - state_timer;
+				int current_second = elapsed_time / 1000;
+
+				if (current_second != last_printed_second && current_second < 5) {
+					char* number_art = "";
+					switch(current_second) {
+						case 0: number_art = "\r\n 55555 \r\n 5     \r\n 5555  \r\n     5 \r\n  555  \r\n"; break;
+						case 1: number_art = "\r\n 4   4 \r\n 4   4 \r\n 44444 \r\n     4 \r\n     4 \r\n"; break;
+						case 2: number_art = "\r\n  333  \r\n 3   3 \r\n   33  \r\n 3   3 \r\n  333  \r\n"; break;
+						case 3: number_art = "\r\n  222  \r\n 2   2 \r\n   22  \r\n  2    \r\n 22222 \r\n"; break;
+						case 4: number_art = "\r\n   1   \r\n  11   \r\n   1   \r\n   1   \r\n  111  \r\n"; break;
+					}
+					sprintf(buffer, "%s", number_art);
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+					last_printed_second = current_second;
+				}
+
+				// Check for movement (incapacitation check)
+				// Add 'elapsed_time > 2000' blind-period: we MUST wait 2.0 seconds for the pillow to finish bouncing
+				if (elapsed_time > 2000 && (fabs(total_accel - 9.8f) > 5.0f || total_gyro > 250.0f)) {
+					// Recovery detected! The person got up or is moving.
+					current_state = STATE_NORMAL;
+					last_printed_second = -1; // Reset countdown memory
+					sprintf(buffer, 
+						"\r\n=================================\r\n"
+						" N   N  OOO  RRRR  M   M  AAA  L     \r\n"
+						" NN  N O   O R   R MM MM A   A L     \r\n"
+						" N N N O   O RRRR  M M M AAAAA L     \r\n"
+						" N  NN O   O R   R M   M A   A L     \r\n"
+						" N   N  OOO  R   R M   M A   A LLLLL \r\n"
+						"=================================\r\n"
+						"RECOVERY DETECTED (Dev: %.2f)\r\n", fabs(total_accel - 9.8f));
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				else if (elapsed_time > 5000) {
+					// 5s timeout with NO movement. User is incapacitated. Fall confirmed.
+					current_state = STATE_CONFIRMED;
+					last_printed_second = -1; // Reset for next time
+					sprintf(buffer, 
+						"\r\n=================================\r\n"
+						"  AAA  L       AAA  RRRR  M   M \r\n"
+						" A   A L      A   A R   R MM MM \r\n"
+						" AAAAA L      AAAAA RRRR  M M M \r\n"
+						" A   A L      A   A R   R M   M \r\n"
+						" A   A LLLLLL A   A R   R M   M \r\n"
+						"=================================\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				break;
+
+			case STATE_CONFIRMED:
+				// Alarm is blaring. LED is flashing fast.
+				delay_ms = 100;
+				// In a real system, you'd wait for a button press to reset here.
+				// For now, we print the alarm string continuously.
+				sprintf(buffer, 
+						"  AAA  L       AAA  RRRR  M   M \r\n"
+						" A   A L      A   A R   R MM MM \r\n"
+						" AAAAA L      AAAAA RRRR  M M M \r\n"
+						" A   A L      A   A R   R M   M \r\n"
+						" A   A LLLLLL A   A R   R M   M \r\n\r\n");
+				HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 				
-				// Hold the screaming alarm state for 5 seconds
-				if (current_tick - alarm_start_time > 5000) {
-					current_fall_state = STATE_NORMAL; // Automatically reset to normal
-					
-					sprintf(buffer, "\r\n[FSM] User Rescued. Resetting System.\r\n");
-					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
-				}
+				// Optional: Add basic button check to disarm (assuming PA1 is button)
+				// if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) == GPIO_PIN_SET) { current_state = STATE_NORMAL; }
 				break;
 		}
-		
-		i++;
-		HAL_Delay(20);	// Sample sensors extremely fast at 50Hz
+
 	}
 
 
