@@ -1,0 +1,494 @@
+  /******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  * (c) CG2028 Teaching Team
+  ******************************************************************************/
+
+
+/*--------------------------- Includes ---------------------------------------*/
+#include "main.h"
+#include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_accelero.h"
+#include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_tsensor.h"
+#include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_gyro.h"
+
+#include "stdio.h"
+#include "string.h"
+#include <sys/stat.h>
+#include <math.h>
+
+static void UART1_Init(void);
+static void Buzzer_GPIO_Init(void);
+static void Button_GPIO_Init(void);
+
+extern void initialise_monitor_handles(void);	// for semi-hosting support (printf). Will not be required if transmitting via UART
+
+extern int mov_avg(int N, int* accel_buff); // asm implementation
+
+int mov_avg_C(int N, int* accel_buff); // Reference C implementation
+
+UART_HandleTypeDef huart1;
+
+// FSM States and Variables
+typedef enum {
+    STATE_NORMAL = 0,
+    STATE_FALLING,
+    STATE_STILLNESS_CHECK,
+    STATE_CONFIRMED
+} FallState_t;
+
+FallState_t current_state = STATE_NORMAL;
+uint32_t state_timer = 0;
+int seen_impact = 0;
+int seen_rotation = 0;
+int seen_freefall = 0; // Tracked separately — freefall (< LOW) is NOT the same as impact (> HIGH)
+int system_armed = 1; // 1 = FSM active, 0 = FSM disarmed
+
+int main(void)
+{
+	const int N=4;
+
+	/* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+	HAL_Init();
+
+	/* UART initialization  */
+	UART1_Init();
+
+	/* Peripheral initializations using BSP functions */
+	BSP_LED_Init(LED2);
+	BSP_ACCELERO_Init();
+	BSP_GYRO_Init();
+
+	/* Initialize Buzzer (PA10 = Grove D2) and Blue User Button (PC13) */
+	Buzzer_GPIO_Init();
+	Button_GPIO_Init();
+
+	/*Set the initial LED state to off*/
+	BSP_LED_Off(LED2);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF initially
+
+	int accel_buff_x[4]={0};
+	int accel_buff_y[4]={0};
+	int accel_buff_z[4]={0};
+	int i=0;
+	int delay_ms=20; // 50Hz sampling: impact spikes (~50ms) fill 2-3 buffer slots instead of 1
+	char buffer[600]; // UART buffer - declared here so it's usable by both button handler and FSM
+
+	// Button multi-press tracking variables
+	int btn_press_count = 0;
+	uint32_t btn_first_press_time = 0;
+	uint32_t btn_last_debounce_time = 0;
+	int btn_last_state = 1; // 1 = released (active-low, so HIGH = released)
+	int btn_waiting_for_decision = 0;
+
+	// Non-blocking sensor read timer
+	uint32_t last_sensor_read_time = 0;
+
+	while (1)
+	{
+		// ========== MULTI-PRESS BUTTON HANDLER ==========
+		// Reads the blue USER button (PC13, active-low)
+		// 1 press = reset alarm, 2 presses = arm/disarm FSM, 3 presses = manual alarm
+		int btn_current = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
+
+		// Detect a fresh button press (falling edge) with 50ms debounce
+		// (200ms was too slow — a human double-click can finish in ~150ms)
+		if (btn_current == GPIO_PIN_RESET && btn_last_state == 1 && (HAL_GetTick() - btn_last_debounce_time > 50)) {
+			btn_press_count++;
+			btn_last_debounce_time = HAL_GetTick();
+			if (btn_press_count == 1) {
+				btn_first_press_time = HAL_GetTick(); // Start the decision window
+			}
+			btn_waiting_for_decision = 1;
+		}
+		btn_last_state = (btn_current == GPIO_PIN_SET) ? 1 : 0;
+
+		// After 500ms since the first press, execute the action based on press count
+		if (btn_waiting_for_decision && (HAL_GetTick() - btn_first_press_time > 500)) {
+			btn_waiting_for_decision = 0;
+
+			if (btn_press_count == 1) {
+				// === 1 PRESS: Reset alarm ===
+				if (current_state == STATE_CONFIRMED) {
+					current_state = STATE_NORMAL;
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF
+					BSP_LED_Off(LED2);
+					sprintf(buffer, "\r\n--- ALARM RESET (1 press) ---\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+			}
+			else if (btn_press_count == 2) {
+				// === 2 PRESSES: Toggle arm/disarm FSM ===
+				system_armed = !system_armed;
+				current_state = STATE_NORMAL; // Always reset FSM on toggle
+				BSP_LED_Off(LED2);
+				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF
+
+				// Non-blocking beep: disarm = 2 beeps, arm = 1 beep
+				// We do them inline with just short blocking pulses (80ms each, barely noticeable)
+				int beeps = system_armed ? 1 : 2;
+				for (int b = 0; b < beeps; b++) {
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_SET);
+					HAL_Delay(80);
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);
+					if (b < beeps - 1) HAL_Delay(80); // Gap between beeps only (not after last)
+				}
+
+				if (system_armed) {
+					sprintf(buffer, "\r\n--- SYSTEM ARMED (2 presses) ---\r\n");
+				} else {
+					sprintf(buffer, "\r\n--- SYSTEM DISARMED (2 presses) ---\r\n");
+				}
+				HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+			}
+			else if (btn_press_count >= 3) {
+				// === 3 PRESSES: Manual alarm trigger ===
+				system_armed = 1; // Re-arm if disarmed
+				current_state = STATE_CONFIRMED;
+				sprintf(buffer, "\r\n!!! MANUAL ALARM TRIGGERED (3 presses) !!!\r\n");
+				HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+			}
+
+			btn_press_count = 0; // Reset for next sequence
+		}
+
+		// ========== NON-BLOCKING SENSOR GATE ==========
+		// Skip sensor reads and FSM until delay_ms has elapsed.
+		// The button handler above runs on every iteration at full CPU speed.
+		if (HAL_GetTick() - last_sensor_read_time < (uint32_t)delay_ms) {
+			continue;
+		}
+		last_sensor_read_time = HAL_GetTick();
+
+		// ========== SKIP FSM IF DISARMED ==========
+		if (!system_armed) {
+			delay_ms = 500; // Slow polling when disarmed
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF
+			BSP_LED_Off(LED2);
+			continue; // Skip entire sensor reading and FSM
+		}
+
+		// LED behavior is now controlled by FSM state (see below)
+
+		int16_t accel_data_i16[3] = { 0 };			// array to store the x, y and z readings of accelerometer
+		/********Function call to read accelerometer values*********/
+		BSP_ACCELERO_AccGetXYZ(accel_data_i16);
+
+		//Copy the values over to a circular style buffer
+		accel_buff_x[i%4]=accel_data_i16[0]; //acceleration along X-Axis
+		accel_buff_y[i%4]=accel_data_i16[1]; //acceleration along Y-Axis
+		accel_buff_z[i%4]=accel_data_i16[2]; //acceleration along Z-Axis
+
+
+		// ********* Read gyroscope values *********/
+		float gyro_data[3]={0.0};
+		float* ptr_gyro=gyro_data;
+		BSP_GYRO_GetXYZ(ptr_gyro);
+
+		//The output of gyro has been made to display in dps(degree per second)
+		float gyro_velocity[3]={0.0};
+		gyro_velocity[0]=(gyro_data[0]*9.8/(1000));
+		gyro_velocity[1]=(gyro_data[1]*9.8/(1000));
+		gyro_velocity[2]=(gyro_data[2]*9.8/(1000));
+
+
+		//Preprocessing the filtered outputs  The same needs to be done for the output from the C program as well
+		float accel_filt_asm[3]={0}; // final value of filtered acceleration values
+
+		accel_filt_asm[0]= (float)mov_avg(N,accel_buff_x) * (9.8/1000.0f);
+		accel_filt_asm[1]= (float)mov_avg(N,accel_buff_y) * (9.8/1000.0f);
+		accel_filt_asm[2]= (float)mov_avg(N,accel_buff_z) * (9.8/1000.0f);
+
+
+		//Preprocessing the filtered outputs  The same needs to be done for the output from the assembly program as well
+		float accel_filt_c[3]={0};
+
+		accel_filt_c[0]=(float)mov_avg_C(N,accel_buff_x) * (9.8/1000.0f);
+		accel_filt_c[1]=(float)mov_avg_C(N,accel_buff_y) * (9.8/1000.0f);
+		accel_filt_c[2]=(float)mov_avg_C(N,accel_buff_z) * (9.8/1000.0f);
+
+		/***************************UART transmission*******************************************/
+
+		/******Transmitting results of C execution over UART*********/
+		// 1. First printf() Equivalent
+		sprintf(buffer, "Results of C execution for filtered accelerometer readings:\r\n");
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+
+		// 2. Second printf() (with Floats) Equivalent
+		// Note: Requires -u _printf_float to be enabled in Linker settings
+		sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n",
+				accel_filt_c[0], accel_filt_c[1], accel_filt_c[2]);
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+
+		/******Transmitting results of asm execution over UART*********/
+
+		// 1. First printf() Equivalent
+		sprintf(buffer, "Results of assembly execution for filtered accelerometer readings:\r\n");
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+
+		// 2. Second printf() (with Floats) Equivalent
+		// Note: Requires -u _printf_float to be enabled in Linker settings
+		sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n",
+				accel_filt_asm[0], accel_filt_asm[1], accel_filt_asm[2]);
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+
+		/******Transmitting Gyroscope readings over UART*********/
+
+		// 1. First printf() Equivalent
+		sprintf(buffer, "Gyroscope sensor readings:\r\n");
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+
+		// Calculate total acceleration and gyroscope magnitudes for UART output
+		float total_accel_print = sqrt(pow(accel_filt_asm[0], 2) + pow(accel_filt_asm[1], 2) + pow(accel_filt_asm[2], 2));
+		float total_gyro_print = sqrt(pow(gyro_velocity[0], 2) + pow(gyro_velocity[1], 2) + pow(gyro_velocity[2], 2));
+
+		// 2. Second printf() (with Floats) Equivalent
+		// Note: Requires -u _printf_float to be enabled in Linker settings
+		sprintf(buffer, "Averaged X : %f; Averaged Y : %f; Averaged Z : %f;\r\n"
+						"Derived Mag -> Accel: %.2f m/s^2 | Gyro: %.2f dps\r\n\n",
+				gyro_velocity[0], gyro_velocity[1], gyro_velocity[2], total_accel_print, total_gyro_print);
+		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+
+		i++; // Increment circular buffer index counter
+
+		// ********* Fall detection *********/
+		
+		// Calculate total acceleration magnitude (Vectors sum)
+		float total_accel = sqrt(pow(accel_filt_asm[0], 2) + pow(accel_filt_asm[1], 2) + pow(accel_filt_asm[2], 2));
+
+		// Calculate total gyroscope velocity magnitude
+		float total_gyro = sqrt(pow(gyro_velocity[0], 2) + pow(gyro_velocity[1], 2) + pow(gyro_velocity[2], 2));
+
+		// Thresholds tuned for mov_avg filtered output at 50Hz:
+		// - mov_avg compresses peaks, so lower HIGH threshold to what the filter actually outputs
+		// - ACCEL_LOW widened slightly to catch filter-lagged freefall
+		// - GYRO lowered to realistic human tumbling speed (400 was too aggressive for desk testing)
+		float ACCEL_THRESHOLD_HIGH = 18.0f; // ~1.8G filtered — covers mov_avg-compressed impact
+		float ACCEL_THRESHOLD_LOW = 4.0f;   // Freefall: below 0.4G (filter-lag widened)
+		float GYRO_THRESHOLD = 200.0f;      // Realistic human tumble (~400 raw dps = ~200 filtered)
+
+		static int last_printed_second = -1; // Defined here for cleanliness
+
+		switch (current_state) {
+			case STATE_NORMAL:
+				// Reset ALL flags
+				seen_impact = 0;
+				seen_rotation = 0;
+				seen_freefall = 0;
+				delay_ms = 20; // 50Hz sampling
+
+				if (total_accel > ACCEL_THRESHOLD_HIGH || total_accel < ACCEL_THRESHOLD_LOW || total_gyro > GYRO_THRESHOLD) {
+					current_state = STATE_FALLING;
+					state_timer = HAL_GetTick();
+
+					// Classify the trigger correctly — impact and freefall are opposite events!
+					if (total_accel > ACCEL_THRESHOLD_HIGH) seen_impact  = 1;
+					if (total_accel < ACCEL_THRESHOLD_LOW)  seen_freefall = 1;
+					if (total_gyro  > GYRO_THRESHOLD)       seen_rotation = 1;
+
+					sprintf(buffer,
+						"\r\n=================================\r\n"
+						" FFFFFFF  AAA   L       L     I N   N  GGGG \r\n"
+						" F       A   A  L       L     I NN  N G     \r\n"
+						" FFFF    AAAAA  L       L     I N N N G GGG \r\n"
+						" F       A   A  L       L     I N  NN G   G \r\n"
+						" F       A   A  LLLLLLL LLLLL I N   N  GGGG \r\n"
+						"=================================\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				break;
+
+			case STATE_FALLING:
+				delay_ms = 20; // Keep 50Hz during fall window
+
+				// Continuously accumulate evidence — classify correctly!
+				if (total_accel > ACCEL_THRESHOLD_HIGH) seen_impact  = 1; // Hard impact spike
+				if (total_accel < ACCEL_THRESHOLD_LOW)  seen_freefall = 1; // Low-G drop
+				if (total_gyro  > GYRO_THRESHOLD)       seen_rotation = 1; // Tumble/twist
+
+				// STRICT GATE: requires a real hard impact AND rotation to proceed.
+				// Freefall alone (slow lowering) OR rotation alone (sitting down) = NOT a fall.
+				if (seen_impact && seen_rotation) {
+					current_state = STATE_STILLNESS_CHECK;
+					state_timer = HAL_GetTick();
+					last_printed_second = -1;
+					sprintf(buffer,
+						"\r\n=================================\r\n"
+						" SSSSS TTTTT  I  L       L     N   N EEEEE SSSSS SSSSS \r\n"
+						" S       T    I  L       L     NN  N E     S     S     \r\n"
+						" SSSSS   T    I  L       L     N N N EEEEE SSSSS SSSSS \r\n"
+						"     S   T    I  L       L     N  NN E         S     S \r\n"
+						" SSSSS   T    I  LLLLLLL LLLLL N   N EEEEE SSSSS SSSSS \r\n"
+						"=================================\r\n"
+						"Waiting 5s... (REAL Impact & Rotation seen!)\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				else if (HAL_GetTick() - state_timer > 1500) {
+					// 1.5s timeout — never got both impact + rotation. Fake fall.
+					current_state = STATE_NORMAL;
+					sprintf(buffer, "\r\n--- TIMEOUT (1.5s) - FAKE FALL (Lacked Impact/Rotation) ---\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				break;
+
+			case STATE_STILLNESS_CHECK:
+				delay_ms = 20; // Keep 50Hz during stillness check
+
+				// Countdown printing logic
+				uint32_t elapsed_time = HAL_GetTick() - state_timer;
+				int current_second = elapsed_time / 1000;
+
+				if (current_second != last_printed_second && current_second < 5) {
+					char* number_art = "";
+					switch(current_second) {
+						case 0: number_art = "\r\n 55555 \r\n 5     \r\n 5555  \r\n     5 \r\n  555  \r\n"; break;
+						case 1: number_art = "\r\n 4   4 \r\n 4   4 \r\n 44444 \r\n     4 \r\n     4 \r\n"; break;
+						case 2: number_art = "\r\n  333  \r\n 3   3 \r\n   33  \r\n 3   3 \r\n  333  \r\n"; break;
+						case 3: number_art = "\r\n  222  \r\n 2   2 \r\n   22  \r\n  2    \r\n 22222 \r\n"; break;
+						case 4: number_art = "\r\n   1   \r\n  11   \r\n   1   \r\n   1   \r\n  111  \r\n"; break;
+					}
+					sprintf(buffer, "%s", number_art);
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+					last_printed_second = current_second;
+				}
+
+				// Check for movement (incapacitation check)
+				// Add 'elapsed_time > 2000' blind-period: we MUST wait 2.0 seconds for the pillow to finish bouncing
+				// Recovery threshold: 3.0 m/s² (~0.3G) deviation or 100 dps rotation.
+				// Ignores minor settling/tremors after a fall, but catches deliberate movement (sitting up, arm raise).
+				if (elapsed_time > 2000 && (fabs(total_accel - 9.8f) > 1.5f || total_gyro > 50.0f)) {
+					// Recovery detected! The person got up or is moving.
+					current_state = STATE_NORMAL;
+					last_printed_second = -1; // Reset countdown memory
+					sprintf(buffer, 
+						"\r\n=================================\r\n"
+						" N   N  OOO  RRRR  M   M  AAA  L     \r\n"
+						" NN  N O   O R   R MM MM A   A L     \r\n"
+						" N N N O   O RRRR  M M M AAAAA L     \r\n"
+						" N  NN O   O R   R M   M A   A L     \r\n"
+						" N   N  OOO  R   R M   M A   A LLLLL \r\n"
+						"=================================\r\n"
+						"RECOVERY DETECTED (Dev: %.2f)\r\n", fabs(total_accel - 9.8f));
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				else if (elapsed_time > 5000) {
+					// 5s timeout with NO movement. User is incapacitated. Fall confirmed.
+					current_state = STATE_CONFIRMED;
+					last_printed_second = -1; // Reset for next time
+					sprintf(buffer, 
+						"\r\n=================================\r\n"
+						"  AAA  L       AAA  RRRR  M   M \r\n"
+						" A   A L      A   A R   R MM MM \r\n"
+						" AAAAA L      AAAAA RRRR  M M M \r\n"
+						" A   A L      A   A R   R M   M \r\n"
+						" A   A LLLLLL A   A R   R M   M \r\n"
+						"=================================\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+				break;
+
+			case STATE_CONFIRMED:
+				// Alarm is blaring! LED flashing fast, Buzzer beeping aggressively.
+				delay_ms = 100; // Alarm strobe at 10Hz (beep rate, not sensor-critical)
+				BSP_LED_Toggle(LED2); // Fast strobe
+				HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_3); // BUZZER TOGGLE = loud beep-beep-beep!
+
+				sprintf(buffer, 
+						"  AAA  L       AAA  RRRR  M   M \r\n"
+						" A   A L      A   A R   R MM MM \r\n"
+						" AAAAA L      AAAAA RRRR  M M M \r\n"
+						" A   A L      A   A R   R M   M \r\n"
+						" A   A LLLLLL A   A R   R M   M \r\n\r\n");
+				HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				break;
+		}
+
+		// Ensure buzzer is OFF in any non-alarm state
+		if (current_state != STATE_CONFIRMED) {
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF
+		}
+
+	}
+
+
+}
+
+
+
+int mov_avg_C(int N, int* accel_buff)
+{ 	// The implementation below is inefficient and meant only for verifying your results.
+	int result=0;
+	for(int i=0; i<N;i++)
+	{
+		result+=accel_buff[i];
+	}
+
+	result=result/4;
+
+	return result;
+}
+
+static void UART1_Init(void)
+{
+        /* Pin configuration for UART. BSP_COM_Init() can do this automatically */
+        __HAL_RCC_GPIOB_CLK_ENABLE();
+         __HAL_RCC_USART1_CLK_ENABLE();
+
+        GPIO_InitTypeDef GPIO_InitStruct = {0};
+        GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+        GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_6;
+        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+        /* Configuring UART1 */
+        huart1.Instance = USART1;
+        huart1.Init.BaudRate = 115200;
+        huart1.Init.WordLength = UART_WORDLENGTH_8B;
+        huart1.Init.StopBits = UART_STOPBITS_1;
+        huart1.Init.Parity = UART_PARITY_NONE;
+        huart1.Init.Mode = UART_MODE_TX_RX;
+        huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+        huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+        huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+        huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+        if (HAL_UART_Init(&huart1) != HAL_OK)
+        {
+          while(1);
+        }
+
+}
+
+static void Buzzer_GPIO_Init(void)
+{
+	// PA3 = Arduino D4 on the B-L4S5I-IOT01A Discovery board
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitStruct.Pin = GPIO_PIN_3;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;  // Push-pull output
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+static void Button_GPIO_Init(void)
+{
+	// PC13 = Blue USER button on the STM32L4S5 Discovery board
+	// This button is active-low (pressed = GPIO_PIN_RESET)
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitStruct.Pin = GPIO_PIN_13;
+	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;  // External pull-up already on board
+	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+}
+
+// Do not modify these lines of code. They are written to supress UART related warnings
+int _read(int file, char *ptr, int len) { return 0; }
+int _fstat(int file, struct stat *st) { return 0; }
+int _lseek(int file, int ptr, int dir) { return 0; }
+int _isatty(int file) { return 1; }
+int _close(int file) { return -1; }
+int _getpid(void) { return 1; }
+int _kill(int pid, int sig) { return -1; }
+
