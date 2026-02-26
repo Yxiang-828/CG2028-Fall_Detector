@@ -1,13 +1,8 @@
-  /******************************************************************************
+/******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
-  * (c) CG2028 Teaching Team
+  * @brief          : Fall Detection FSM (Silent Alarm Loop & Sentinel)
+  * (c) CG2028 Teaching Team / Assistant Aiko 💕
   ******************************************************************************/
-/*
- * This program is intended to help you test your assembly program with a
- * reference C program's outputs
- * */
-
 
 #include "main.h"
 #include "../../Drivers/BSP/B-L4S5I-IOT01/stm32l4s5i_iot01_accelero.h"
@@ -33,7 +28,6 @@ int mov_avg_C(int N, int* accel_buff);
 UART_HandleTypeDef huart1;
 ADC_HandleTypeDef hadc1; 
 
-// FSM States and Variables
 typedef enum {
     STATE_NORMAL = 0,
     STATE_FALLING,
@@ -44,7 +38,6 @@ typedef enum {
 FallState_t current_state = STATE_NORMAL;
 uint32_t state_timer = 0;
 
-// FSM Evidence Flags (The Boolean Ultimatum)
 int seen_impact = 0;
 int seen_rotation = 0;
 int seen_freefall = 0; 
@@ -84,7 +77,6 @@ int main(void)
 
     uint32_t last_sensor_read_time = 0;
     
-    // Peak Tracking & Dynamic Sound Baseline
     uint32_t peak_sound_window = 0; 
     float peak_accel_window = 0.0f; 
     float peak_gyro_window = 0.0f;  
@@ -139,7 +131,9 @@ int main(void)
             else if (btn_press_count >= 3) {
                 system_armed = 1; 
                 current_state = STATE_CONFIRMED;
-                sprintf(buffer, "\r\n!!! MANUAL ALARM TRIGGERED (3 presses) !!!\r\n");
+                sprintf(buffer, 
+                    "\r\n___SEND_TELEGRAM_ALERT___\r\n"
+                    "!!! MANUAL ALARM TRIGGERED (3 presses) !!!\r\n");
                 HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
             }
             btn_press_count = 0; 
@@ -166,7 +160,6 @@ int main(void)
         float gyro_data[3]={0.0};
         BSP_GYRO_GetXYZ(gyro_data);
 
-        // Correct physics! No gravity multiplier on angular velocity.
         float gyro_velocity[3]={0.0};
         gyro_velocity[0] = (gyro_data[0] / 1000.0f);
         gyro_velocity[1] = (gyro_data[1] / 1000.0f);
@@ -182,36 +175,31 @@ int main(void)
         float total_accel = sqrtf(powf(accel_filt_asm[0], 2) + powf(accel_filt_asm[1], 2) + powf(accel_filt_asm[2], 2));
         float total_gyro = sqrtf(powf(gyro_velocity[0], 2) + powf(gyro_velocity[1], 2) + powf(gyro_velocity[2], 2));
 
-        // Peak Tracking for accurate terminal output
         if (current_sound > peak_sound_window) peak_sound_window = current_sound;
         if (total_accel > peak_accel_window) peak_accel_window = total_accel;
         if (total_gyro > peak_gyro_window) peak_gyro_window = total_gyro;
 
-        // ==========================================
-        // EMPIRICAL CALIBRATION CONSTANTS
-        // ==========================================
-        float ACCEL_THRESHOLD_HIGH = 20.0f; // Safely below 24.28 minimum impact peak
-        float ACCEL_THRESHOLD_LOW = 5.0f;   // Safely above 3.47 maximum freefall trough
-        float GYRO_THRESHOLD = 400.0f;      // Safely below 640 minimum rotation peak
+        float ACCEL_THRESHOLD_HIGH = 20.0f; 
+        float ACCEL_THRESHOLD_LOW = 5.0f;   
+        float GYRO_THRESHOLD = 400.0f;      
 
         static int last_printed_second = -1;
 
-        // 500ms Print and Baseline Update
+        // 500ms Print and Baseline Update (Silenced during ALARM)
         if (i % 25 == 0) {
-            sprintf(buffer, "Sound:%lu | Accel:%.2f | Gyro:%.2f\r\n", peak_sound_window, peak_accel_window, peak_gyro_window);
-            HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+            if (current_state != STATE_CONFIRMED) {
+                sprintf(buffer, "Sound:%lu | Accel:%.2f | Gyro:%.2f\r\n", peak_sound_window, peak_accel_window, peak_gyro_window);
+                HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+            }
             
-            // Shift history array
             sound_history[2] = sound_history[1];
             sound_history[1] = sound_history[0];
             sound_history[0] = peak_sound_window;
 
-            // Update rolling noise floor max
             bg_sound_max = sound_history[0];
             if (sound_history[1] > bg_sound_max) bg_sound_max = sound_history[1];
             if (sound_history[2] > bg_sound_max) bg_sound_max = sound_history[2];
 
-            // Reset peaks
             peak_sound_window = 0; 
             peak_accel_window = 0.0f;
             peak_gyro_window = 0.0f;
@@ -222,19 +210,16 @@ int main(void)
         // ********* Fall Detection FSM *********/
         switch (current_state) {
             case STATE_NORMAL:
-                // Reset ALL flags
                 seen_impact = 0;
                 seen_rotation = 0;
                 seen_freefall = 0;
                 seen_loud_noise = 0;
                 delay_ms = 20; 
 
-                // Check physical gates
                 if (total_accel > ACCEL_THRESHOLD_HIGH) seen_impact = 1;
                 if (total_accel < ACCEL_THRESHOLD_LOW)  seen_freefall = 1;
                 if (total_gyro  > GYRO_THRESHOLD)       seen_rotation = 1;
 
-                // TRIGGER: Any of the 3 anomalies forces an investigation
                 if (seen_impact || seen_freefall || seen_rotation) {
                     current_state = STATE_FALLING;
                     state_timer = HAL_GetTick();
@@ -254,22 +239,24 @@ int main(void)
             case STATE_FALLING:
                 delay_ms = 20; 
 
-                // Continuously accumulate physical evidence
                 if (total_accel > ACCEL_THRESHOLD_HIGH) seen_impact = 1; 
                 if (total_accel < ACCEL_THRESHOLD_LOW)  seen_freefall = 1; 
                 if (total_gyro  > GYRO_THRESHOLD)       seen_rotation = 1; 
                 
-                // Dynamic Acoustic Gate (+600 spike over background)
                 if (current_sound > (bg_sound_max + 600)) seen_loud_noise = 1;
 
-                // ULTIMATUM GATE: Must have an IMPACT, AND (Freefall OR Rotation)
                 if (seen_impact && (seen_freefall || seen_rotation)) {
                     if (seen_loud_noise) {
                         current_state = STATE_CONFIRMED;
+                        // Sentinel + ASCII Art prints ONCE right here
                         sprintf(buffer, 
-                            "\r\n=================================\r\n"
+                            "\r\n___SEND_TELEGRAM_ALERT___\r\n"
                             "!!! CRASH DETECTED - IMMEDIATE ALARM !!!\r\n"
-                            "=================================\r\n");
+                            "  AAA  L       AAA  RRRR  M   M \r\n"
+                            " A   A L      A   A R   R MM MM \r\n"
+                            " AAAAA L      AAAAA RRRR  M M M \r\n"
+                            " A   A L      A   A R   R M   M \r\n"
+                            " A   A LLLLLL A   A R   R M   M \r\n");
                         HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
                     } 
                     else {
@@ -315,18 +302,20 @@ int main(void)
                     last_printed_second = current_second;
                 }
 
-                // POST-IMPACT ACOUSTIC WINDOW (First 2 seconds)
                 if (elapsed_time < 2000 && current_sound > (bg_sound_max + 600)) {
                     current_state = STATE_CONFIRMED;
+                    // Sentinel + ASCII Art prints ONCE right here
                     sprintf(buffer, 
-                        "\r\n=================================\r\n"
+                        "\r\n___SEND_TELEGRAM_ALERT___\r\n"
                         "!!! DELAYED CRASH DETECTED - IMMEDIATE ALARM !!!\r\n"
-                        "=================================\r\n");
+                        "  AAA  L       AAA  RRRR  M   M \r\n"
+                        " A   A L      A   A R   R MM MM \r\n"
+                        " AAAAA L      AAAAA RRRR  M M M \r\n"
+                        " A   A L      A   A R   R M   M \r\n"
+                        " A   A LLLLLL A   A R   R M   M \r\n");
                     HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
                 }
 
-                // KINETIC RECOVERY CHECK (Gyroscope Ignored per empirical logic)
-                // Rejects rolling/struggling (Dev ~3.3), requires an actual push up (Dev > 4.5)
                 else if (elapsed_time > 2000 && (fabs(total_accel - 9.8f) > 4.5f)) {
                     current_state = STATE_NORMAL;
                     last_printed_second = -1; 
@@ -344,14 +333,14 @@ int main(void)
                 else if (elapsed_time > 5000) {
                     current_state = STATE_CONFIRMED;
                     last_printed_second = -1; 
+                    // Sentinel + ASCII Art prints ONCE right here
                     sprintf(buffer, 
-                        "\r\n=================================\r\n"
+                        "\r\n___SEND_TELEGRAM_ALERT___\r\n"
                         "  AAA  L       AAA  RRRR  M   M \r\n"
                         " A   A L      A   A R   R MM MM \r\n"
                         " AAAAA L      AAAAA RRRR  M M M \r\n"
                         " A   A L      A   A R   R M   M \r\n"
-                        " A   A LLLLLL A   A R   R M   M \r\n"
-                        "=================================\r\n");
+                        " A   A LLLLLL A   A R   R M   M \r\n");
                     HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
                 }
                 break;
@@ -360,14 +349,7 @@ int main(void)
                 delay_ms = 100; 
                 BSP_LED_Toggle(LED2); 
                 HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_3); 
-
-                sprintf(buffer, 
-                        "  AAA  L       AAA  RRRR  M   M \r\n"
-                        " A   A L      A   A R   R MM MM \r\n"
-                        " AAAAA L      AAAAA RRRR  M M M \r\n"
-                        " A   A L      A   A R   R M   M \r\n"
-                        " A   A LLLLLL A   A R   R M   M \r\n\r\n");
-                HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+                // TOTAL UART SILENCE. No printing allowed here.
                 break;
         }
 
