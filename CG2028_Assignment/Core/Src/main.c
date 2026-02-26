@@ -17,6 +17,8 @@
 #include <math.h>
 
 static void UART1_Init(void);
+static void Buzzer_GPIO_Init(void);
+static void Button_GPIO_Init(void);
 
 extern void initialise_monitor_handles(void);	// for semi-hosting support (printf). Will not be required if transmitting via UART
 
@@ -38,6 +40,7 @@ FallState_t current_state = STATE_NORMAL;
 uint32_t state_timer = 0;
 int seen_impact = 0;
 int seen_rotation = 0;
+int system_armed = 1; // 1 = FSM active, 0 = FSM disarmed
 
 int main(void)
 {
@@ -54,19 +57,116 @@ int main(void)
 	BSP_ACCELERO_Init();
 	BSP_GYRO_Init();
 
+	/* Initialize Buzzer (PA10 = Grove D2) and Blue User Button (PC13) */
+	Buzzer_GPIO_Init();
+	Button_GPIO_Init();
+
 	/*Set the initial LED state to off*/
 	BSP_LED_Off(LED2);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF initially
 
 	int accel_buff_x[4]={0};
 	int accel_buff_y[4]={0};
 	int accel_buff_z[4]={0};
 	int i=0;
 	int delay_ms=1000; //change delay time to suit your code
+	char buffer[600]; // UART buffer - declared here so it's usable by both button handler and FSM
+
+	// Button multi-press tracking variables
+	int btn_press_count = 0;
+	uint32_t btn_first_press_time = 0;
+	uint32_t btn_last_debounce_time = 0;
+	int btn_last_state = 1; // 1 = released (active-low, so HIGH = released)
+	int btn_waiting_for_decision = 0;
+
+	// Non-blocking sensor read timer
+	uint32_t last_sensor_read_time = 0;
 
 	while (1)
 	{
+		// ========== MULTI-PRESS BUTTON HANDLER ==========
+		// Reads the blue USER button (PC13, active-low)
+		// 1 press = reset alarm, 2 presses = arm/disarm FSM, 3 presses = manual alarm
+		int btn_current = HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13);
 
-		BSP_LED_Toggle(LED2);		// This function helps to toggle the current LED state
+		// Detect a fresh button press (falling edge) with 50ms debounce
+		// (200ms was too slow — a human double-click can finish in ~150ms)
+		if (btn_current == GPIO_PIN_RESET && btn_last_state == 1 && (HAL_GetTick() - btn_last_debounce_time > 50)) {
+			btn_press_count++;
+			btn_last_debounce_time = HAL_GetTick();
+			if (btn_press_count == 1) {
+				btn_first_press_time = HAL_GetTick(); // Start the decision window
+			}
+			btn_waiting_for_decision = 1;
+		}
+		btn_last_state = (btn_current == GPIO_PIN_SET) ? 1 : 0;
+
+		// After 500ms since the first press, execute the action based on press count
+		if (btn_waiting_for_decision && (HAL_GetTick() - btn_first_press_time > 500)) {
+			btn_waiting_for_decision = 0;
+
+			if (btn_press_count == 1) {
+				// === 1 PRESS: Reset alarm ===
+				if (current_state == STATE_CONFIRMED) {
+					current_state = STATE_NORMAL;
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF
+					BSP_LED_Off(LED2);
+					sprintf(buffer, "\r\n--- ALARM RESET (1 press) ---\r\n");
+					HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+				}
+			}
+			else if (btn_press_count == 2) {
+				// === 2 PRESSES: Toggle arm/disarm FSM ===
+				system_armed = !system_armed;
+				current_state = STATE_NORMAL; // Always reset FSM on toggle
+				BSP_LED_Off(LED2);
+				HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF
+
+				// Non-blocking beep: disarm = 2 beeps, arm = 1 beep
+				// We do them inline with just short blocking pulses (80ms each, barely noticeable)
+				int beeps = system_armed ? 1 : 2;
+				for (int b = 0; b < beeps; b++) {
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_SET);
+					HAL_Delay(80);
+					HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);
+					if (b < beeps - 1) HAL_Delay(80); // Gap between beeps only (not after last)
+				}
+
+				if (system_armed) {
+					sprintf(buffer, "\r\n--- SYSTEM ARMED (2 presses) ---\r\n");
+				} else {
+					sprintf(buffer, "\r\n--- SYSTEM DISARMED (2 presses) ---\r\n");
+				}
+				HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+			}
+			else if (btn_press_count >= 3) {
+				// === 3 PRESSES: Manual alarm trigger ===
+				system_armed = 1; // Re-arm if disarmed
+				current_state = STATE_CONFIRMED;
+				sprintf(buffer, "\r\n!!! MANUAL ALARM TRIGGERED (3 presses) !!!\r\n");
+				HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
+			}
+
+			btn_press_count = 0; // Reset for next sequence
+		}
+
+		// ========== NON-BLOCKING SENSOR GATE ==========
+		// Skip sensor reads and FSM until delay_ms has elapsed.
+		// The button handler above runs on every iteration at full CPU speed.
+		if (HAL_GetTick() - last_sensor_read_time < (uint32_t)delay_ms) {
+			continue;
+		}
+		last_sensor_read_time = HAL_GetTick();
+
+		// ========== SKIP FSM IF DISARMED ==========
+		if (!system_armed) {
+			delay_ms = 500; // Slow polling when disarmed
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF
+			BSP_LED_Off(LED2);
+			continue; // Skip entire sensor reading and FSM
+		}
+
+		// LED behavior is now controlled by FSM state (see below)
 
 		int16_t accel_data_i16[3] = { 0 };			// array to store the x, y and z readings of accelerometer
 		/********Function call to read accelerometer values*********/
@@ -106,7 +206,6 @@ int main(void)
 		accel_filt_c[2]=(float)mov_avg_C(N,accel_buff_z) * (9.8/1000.0f);
 
 		/***************************UART transmission*******************************************/
-		char buffer[600]; // Increased buffer size heavily to support the large multi-line ASCII art prints without overflowing memory
 
 		/******Transmitting results of C execution over UART*********/
 		// 1. First printf() Equivalent
@@ -148,9 +247,7 @@ int main(void)
 				gyro_velocity[0], gyro_velocity[1], gyro_velocity[2], total_accel_print, total_gyro_print);
 		HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
 
-		i++; // Increment circular buffer index counter BEFORE the blocking delay
-
-		HAL_Delay(delay_ms);	// Dynamic delay based on FSM state (100ms or 1000ms)
+		i++; // Increment circular buffer index counter
 
 		// ********* Fall detection *********/
 		
@@ -286,10 +383,11 @@ int main(void)
 				break;
 
 			case STATE_CONFIRMED:
-				// Alarm is blaring. LED is flashing fast.
+				// Alarm is blaring! LED flashing fast, Buzzer beeping aggressively.
 				delay_ms = 100;
-				// In a real system, you'd wait for a button press to reset here.
-				// For now, we print the alarm string continuously.
+				BSP_LED_Toggle(LED2); // Fast strobe
+				HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_3); // BUZZER TOGGLE = loud beep-beep-beep!
+
 				sprintf(buffer, 
 						"  AAA  L       AAA  RRRR  M   M \r\n"
 						" A   A L      A   A R   R MM MM \r\n"
@@ -297,10 +395,12 @@ int main(void)
 						" A   A L      A   A R   R M   M \r\n"
 						" A   A LLLLLL A   A R   R M   M \r\n\r\n");
 				HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), HAL_MAX_DELAY);
-				
-				// Optional: Add basic button check to disarm (assuming PA1 is button)
-				// if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1) == GPIO_PIN_SET) { current_state = STATE_NORMAL; }
 				break;
+		}
+
+		// Ensure buzzer is OFF in any non-alarm state
+		if (current_state != STATE_CONFIRMED) {
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET); // Buzzer OFF
 		}
 
 	}
@@ -355,6 +455,29 @@ static void UART1_Init(void)
 
 }
 
+static void Buzzer_GPIO_Init(void)
+{
+	// PA3 = Arduino D4 on the B-L4S5I-IOT01A Discovery board
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitStruct.Pin = GPIO_PIN_3;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;  // Push-pull output
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+static void Button_GPIO_Init(void)
+{
+	// PC13 = Blue USER button on the STM32L4S5 Discovery board
+	// This button is active-low (pressed = GPIO_PIN_RESET)
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitStruct.Pin = GPIO_PIN_13;
+	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;  // External pull-up already on board
+	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+}
 
 // Do not modify these lines of code. They are written to supress UART related warnings
 int _read(int file, char *ptr, int len) { return 0; }
