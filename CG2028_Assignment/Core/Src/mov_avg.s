@@ -39,6 +39,5 @@ loop:
     B loop              @ Repeat loop
 
 end_loop:
-    ASR r0, r3, #2      @ r0 = sum / 4
-    
+	SDIV r0, r3, r0
     POP {r2-r11, pc}    @ Restore registers and return

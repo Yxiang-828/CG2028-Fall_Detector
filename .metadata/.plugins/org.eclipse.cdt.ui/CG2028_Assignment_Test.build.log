@@ -1,10 +1,10 @@
-04:40:16 **** Incremental Build of configuration Debug for project CG2028_Assignment_Test ****
+22:07:17 **** Incremental Build of configuration Debug for project CG2028_Assignment_Test ****
 make -j16 all 
 arm-none-eabi-size  CG2028_Assignment_Test.elf 
    text	   data	    bss	    dec	    hex	filename
-  18580	    484	   2076	  21140	   5294	CG2028_Assignment_Test.elf
+  18668	    484	   2076	  21228	   52ec	CG2028_Assignment_Test.elf
 Finished building: default.size.stdout
  
 
-04:40:17 Build Finished. 0 errors, 0 warnings. (took 577ms)
+22:07:18 Build Finished. 0 errors, 0 warnings. (took 611ms)
 
