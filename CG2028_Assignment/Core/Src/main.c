@@ -1,7 +1,7 @@
-/******************************************************************************
+  /******************************************************************************
   * @file           : main.c
-  * @brief          : Fall Detection FSM (Silent Alarm Loop & Sentinel)
-  * (c) CG2028 Teaching Team / Assistant Aiko 💕
+  * @brief          : Main program body
+  * (c) CG2028 Teaching Team
   ******************************************************************************/
 
 #include "main.h"
