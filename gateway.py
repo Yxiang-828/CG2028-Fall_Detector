@@ -13,13 +13,20 @@ TELEGRAM_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
 # The exact Sentinel Value printed by the STM32 FSM transition
 TRIGGER_PHRASE = "___SEND_TELEGRAM_ALERT___"
+DISARM_PHRASE = "--- SYSTEM DISARMED (2 presses) ---"
+ARM_PHRASE = "--- SYSTEM ARMED (2 presses) ---"
+MANUAL_ALARM_PHRASE = "!!! MANUAL ALARM TRIGGERED (3 presses) !!!"
 
 last_alert_time = 0
-def send_telegram_alert():
-    print("\n[GATEWAY] 🚨 Sentinel Value Recognized! Transmitting in background...")
+def send_telegram_alert(message="🚨 EMERGENCY! Yao Xiang has fallen! Immediate assistance required!"):
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    full_message = f"{message}\n⏰ Time: {timestamp}"
+    
+    print(f"\n[GATEWAY] 🚨 Transmitting in background: {full_message}")
     payload = {
         'chat_id': CHAT_ID,
-        'text': '🚨 EMERGENCY! Yao Xiang has fallen! Immediate assistance required!'
+        'text': full_message
     }
     try:
         # 5-second timeout ensures the thread dies cleanly if Wi-Fi drops
@@ -56,6 +63,37 @@ def main():
                                 # Fire the API call in a BACKGROUND THREAD
                                 # This prevents the serial buffer from freezing!
                                 threading.Thread(target=send_telegram_alert, daemon=True).start()
+                                
+                        elif line == MANUAL_ALARM_PHRASE:
+                            current_time = time.time()
+                            
+                            # 10-second software debounce
+                            if current_time - last_alert_time > 10:
+                                last_alert_time = current_time
+                                print("\n[GATEWAY] ⏱️ Cooldown activated for 10 seconds...")
+                                
+                                threading.Thread(target=send_telegram_alert, args=("🆘 MANUAL PANIC ALARM TRIGGERED BY YAO XIANG! 🆘",), daemon=True).start()
+                        
+                        elif line == DISARM_PHRASE:
+                            current_time = time.time()
+                            
+                            # 10-second software debounce
+                            if current_time - last_alert_time > 10:
+                                last_alert_time = current_time
+                                print("\n[GATEWAY] ⏱️ Cooldown activated for 10 seconds...")
+                                
+                                # Custom message for disarm
+                                threading.Thread(target=send_telegram_alert, args=("Oi, Yao Xiang has disabled the detector!",), daemon=True).start()
+                                
+                        elif line == ARM_PHRASE:
+                            current_time = time.time()
+                            
+                            # 10-second software debounce
+                            if current_time - last_alert_time > 10:
+                                last_alert_time = current_time
+                                print("\n[GATEWAY] ⏱️ Cooldown activated for 10 seconds...")
+                                
+                                threading.Thread(target=send_telegram_alert, args=("🛡️ System Armed: Fall Detector is now monitoring.",), daemon=True).start()
                                 
                         else:
                             # Echo the normal STM32 terminal output
