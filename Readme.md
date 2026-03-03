@@ -16,7 +16,8 @@ This document serves as your comprehensive guide to the **CG2028 Assignment**. I
 1.  **Input:**
     *   **Accelerometer:** Measures linear acceleration ($m/s^2$ or $g$). Detects impact spikes.
     *   **Gyroscope:** Measures angular velocity ($dps$). Detects rapid rotation (falling over).
-    *   **User Input:** 5-Way Joystick for system control (Arm/Disarm).
+    *   **Sound Sensor:** Measures ambient and peak noise levels to identify impact sounds.
+    *   **User Input:** On-board Blue Button (PC13) for multi-press control (Reset/Arm/Disarm/Manual Alarm).
 
 2.  **Processing:**
     *   **Assembly (`mov_avg.s`):** A specialized Moving Average Filter for noise reduction.
@@ -280,11 +281,14 @@ uint32_t last_btn_time = 0;
 
 This section details the extra hardware used, how it works, and why it is essential for a complete safety system.
 
-### **A. 5-Way Joystick Center Button (System Arm/Disarm)**
-*   **Component:** On-board Joystick (Center Pin connected to `PA1`).
-*   **Function:** Functions as the master ON/OFF switch for the detection logic.
-*   **How it Works:** The joystick is a digital input switch. When pressed, it connects the circuit, pulling the GPIO Pin `PA1` HIGH (`1`). The software detects this "Rising Edge".
-*   **Why we want it:** Usability. Real users need to take the device off (e.g., to shower or sleep). Without a way to "Disarm" the system, simply placing the device on a table or dropping it onto a bed would trigger false alarms. This prevents the "Boy Who Cried Wolf" scenario.
+### **A. User Button (Multi-Press Control)**
+*   **Component:** On-board Blue User Button (Pin `PC13`).
+*   **Function:** Multi-purpose control switch for Reset, Arm/Disarm, and Manual Alarm logic.
+*   **How it Works:** The button triggers actions based on the number of consecutive presses:
+    *   **1 Press:** Resets the alarm.
+    *   **2 Presses:** Toggles the system Armed/Disarmed state.
+    *   **3+ Presses:** Manually overrides the system and triggers a Panic Alarm.
+*   **Why we want it:** Usability and Safety. Users need to be able to temporarily turn off monitoring. Multi-press functionality gives full control through a single interface, and a triple-press provides manual emergency activation if they need help without falling.
 
 ### **B. Active Buzzer (Audible Alarm)**
 *   **Component:** Piezo-electric buzzer connected to `PA0`.
@@ -338,19 +342,20 @@ Furthermore, analyzing the biomechanics of how people fall reveals that falls ra
 To combat false positives from daily activities, this system is built on a **Mealy Finite State Machine (FSM)**. A Mealy machine computes its next state and outputs based on both its *current state* and *current sensor inputs*. This allows us to track the chronological sequence of a fall, rather than relying on a single moment in time.
 
 The FSM consists of 4 states:
-1. **`STATE_NORMAL`**: The system is monitoring at 10Hz. It waits for the first anomaly (either a massive impact, a freefall, or a huge rotational spike).
-2. **`STATE_FALLING`**: The sequence has begun. The system waits up to **1.5 seconds** to see if the *other* conditions occur (e.g., if rotation triggered us, we wait for the impact). If they don't all occur together within 1.5s, it was a fake fall (like sitting down fast) and it resets.
-3. **`STATE_STILLNESS_CHECK`**: Both impact and rotation happened! The system now initiates a **5-second countdown**. It employs a 2-second "blind period" to let the physical sensors and surfaces stop bouncing, and then checks if the user is moving (recovering). If the user gets up, the alarm is aborted.
-4. **`STATE_CONFIRMED`**: The countdown reached zero without the user getting up. The system declares a "Long Lie" emergency and triggers the alarms.
+1. **`STATE_NORMAL`**: The system is monitoring at 50Hz (20ms delay). It waits for the first anomaly (a massive impact, a freefall, or a huge rotational spike).
+2. **`STATE_FALLING`**: The sequence has begun. The system waits up to **1.5 seconds** for impact *and* either freefall or rotation. If a loud impact noise is also detected, it immediately enters `STATE_CONFIRMED`. Otherwise, it proceeds to check for stillness.
+3. **`STATE_STILLNESS_CHECK`**: Physical fall dynamics were detected, but absent a loud initial noise. It initiates a **5-second countdown**. If a loud noise happens within the first 2 seconds, it triggers an immediate alarm. Following a 2-second "blind period", it checks if the user is moving (recovering). If recovery is detected (>4.5m/s² deviation), the alarm is aborted.
+4. **`STATE_CONFIRMED`**: Triggered either by immediate loud noise evidence during the fall/blind period, or by the countdown running out without recovery. The system declares a "Long Lie" or crash emergency, flashing the LED and sounding the alarm while blocking normal output.
 
 ### **C. Current Thresholds & Conditions**
 Our system uses the following finely-tuned empirical thresholds to distinguish true falls from casual activities (like moving the board, shaking it, or dropping it on a soft pillow):
 
-*   **`ACCEL_THRESHOLD_HIGH = 30.0f` ($m/s^2$)**: Detects a genuinely hard, violent impact ($\approx 3.0g$). Bumped up from 25.0f to ignore casual table bumps.
-*   **`ACCEL_THRESHOLD_LOW = 2.5f` ($m/s^2$)**: Detects a state of **Freefall** ($\approx 0.25g$). This is critical for detecting when the user falls onto a soft surface (like a bed/pillow) that absorbs the final impact.
-*   **`GYRO_THRESHOLD = 400.0f` ($dps$)**: Detects incredibly rapid tumbling/rotation. Bumped up heavily from 150 dps so that casual wrist twisting or swishing does not trigger the FSM. 
+*   **`ACCEL_THRESHOLD_HIGH = 20.0f` ($m/s^2$)**: Detects a genuinely hard, violent impact ($\approx 2.0g$). Scaled to balance sensitivity with false positives.
+*   **`ACCEL_THRESHOLD_LOW = 5.0f` ($m/s^2$)**: Detects a state of **Freefall** ($\approx 0.5g$). This is critical for detecting when the user falls onto a soft surface (like a bed/pillow) that absorbs the final impact.
+*   **`GYRO_THRESHOLD = 400.0f` ($dps$)**: Detects incredibly rapid tumbling/rotation. High threshold so that casual wrist twisting or swishing does not trigger the FSM.
+*   **Sound Level Noise Floor Margin**: Exceeding `bg_sound_max + 600` flags an impact noise, allowing immediate confirmation over the baseline room acoustics.
 
-*   **Recovery Thresholds (Stillness Check)**: To abort the 5-second alarm countdown, the user must generate significant movement: `> 5.0f` deviation in acceleration from baseline 1g, or `> 250.0f` dps rotation.
+*   **Recovery Thresholds (Stillness Check)**: To abort the 5-second alarm countdown, the user must generate significant movement: `> 4.5f` deviation in acceleration from baseline 1g.
 
 ### **D. Testing Methodology**
 The system logic was heavily verified using live visual debugging via a serial connection.
